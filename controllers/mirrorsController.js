@@ -324,9 +324,9 @@ async function buildOsPdf(proj, meta, log) {
 
 // ─── Fase 2d: inclusão de arquivos TXT (não-fatal) ───────────────────────────
 // Adiciona TXTs à pasta do ZIP, substituindo XXXXX pelo número da OS.
-async function addTxtFiles(folder, proj, meta, log) {
+async function collectTxtFiles(proj, meta, log) {
   const seenFileIds = new Set();
-  let count = 0;
+  const entries = [];
 
   for (const plan of (proj.cutting_plans || [])) {
     for (const att of (plan.attachments || [])) {
@@ -344,13 +344,13 @@ async function addTxtFiles(folder, proj, meta, log) {
 
       const content = await retry(() => fs.promises.readFile(att.file.path, 'utf8'));
       const destName = `${meta.osNumber} ${att.file.name}`;
-      folder.file(destName, content.replace(/XXXXX/g, meta.osNumber));
-      count++;
-      log.push(`  [OK] TXT incluído: ${destName}`);
+      entries.push({ name: destName, content: content.replace(/XXXXX/g, meta.osNumber) });
+      log.push(`  [OK] TXT pronto: ${destName}`);
     }
   }
 
-  if (count === 0) log.push('  [AVS] Nenhum arquivo TXT encontrado para esta OS');
+  if (entries.length === 0) log.push('  [AVS] Nenhum arquivo TXT encontrado para esta OS');
+  return entries;
 }
 
 // ─── Fase 3: sincronização com Jira ──────────────────────────────────────────
@@ -467,21 +467,23 @@ async function processOsEntry(entry, proj, zip, req, fieldWarnings) {
   log.push('  [OK] Fase 1 — validação de arquivos passou');
 
   try {
-    const folder = zip.folder(folderName);
-
-    // Fase 2: PDF
+    // Fase 2: PDF (mantido em memória apenas para anexar ao Jira)
     phase = 'geração do PDF';
     const pdfBuffer = await buildOsPdf(proj, meta, log);
-    folder.file(`${folderName}.pdf`, pdfBuffer);
-    log.push(`  [OK] PDF salvo no ZIP: ${folderName}.pdf`);
+    log.push(`  [OK] PDF gerado (será anexado ao Jira)`);
 
-    // Fase 2d: TXTs
+    // Fase 2d: coleta dos TXTs (só vão para o zip se Jira sincronizar)
     phase = 'inclusão de arquivos TXT';
-    await addTxtFiles(folder, proj, meta, log);
+    const txtEntries = await collectTxtFiles(proj, meta, log);
 
     // Fase 3: Jira
     phase = 'envio do PDF ao Jira';
     attachmentIds = await syncOsToJira(req.user.id, entry, folderName, pdfBuffer, proj, meta, log, fieldWarnings);
+
+    // Sucesso: adiciona os TXTs direto na raiz do zip
+    for (const t of txtEntries) {
+      zip.file(t.name, t.content);
+    }
 
     log.push('  → RESULTADO: SUCESSO');
     return { log };
@@ -495,7 +497,6 @@ async function processOsEntry(entry, proj, zip, req, fieldWarnings) {
         log.push(`  [RLB] Rollback falhou para anexo ${attId}: ${delErr.message}`);
       }
     }
-    zip.remove(folderName);
     log.push(`  [ERR] Fase "${phase}": ${err.message}`, '  → RESULTADO: FALHA');
     return { log, failure: { jiraKey: entry.jiraKey, os_number: meta.osNumber, phase, message: err.message, type: 'PROCESSING_ERROR' } };
   }
