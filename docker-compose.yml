@@ -7,6 +7,10 @@ services:
     ports:
       - "3000:3000"
     restart: always
+    environment:
+      - UPLOAD_DIR=/data/attachments
+    volumes:
+      - /opt/applicationStorage/orquestra/attachments/projects:/data/attachments
 
 networks:
   maestro-network:
