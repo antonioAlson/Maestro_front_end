@@ -149,6 +149,63 @@ export async function ensureDatabaseCompatibility() {
   await ensureFileStorageTable();
   await ensureCuttingPlansTable();
   await ensureCuttingPlanAttachmentTable();
+  await ensureAuditTables();
+}
+
+async function ensureAuditTables() {
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS maestro.project_audit (
+      id            SERIAL PRIMARY KEY,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+      actor_user_id INTEGER,
+      actor_email   TEXT,
+      action        TEXT NOT NULL,
+      project_id    INTEGER NOT NULL,
+      project_code  TEXT,
+      "before"      JSONB,
+      "after"       JSONB,
+      metadata      JSONB,
+      request_id    UUID,
+      ip            TEXT
+    )
+  `, 'maestro.project_audit');
+
+  await runCompatibilityQuery(`
+    CREATE INDEX IF NOT EXISTS project_audit_project_id_idx
+      ON maestro.project_audit (project_id, created_at DESC)
+  `, 'project_audit_project_id_idx');
+
+  await runCompatibilityQuery(`
+    CREATE INDEX IF NOT EXISTS project_audit_actor_idx
+      ON maestro.project_audit (actor_user_id, created_at DESC)
+  `, 'project_audit_actor_idx');
+
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS maestro.os_generation_audit (
+      id                   SERIAL PRIMARY KEY,
+      created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+      actor_user_id        INTEGER,
+      actor_email          TEXT,
+      request_id           UUID NOT NULL,
+      total_requested      INTEGER NOT NULL DEFAULT 0,
+      total_success        INTEGER NOT NULL DEFAULT 0,
+      total_failed         INTEGER NOT NULL DEFAULT 0,
+      total_field_warnings INTEGER NOT NULL DEFAULT 0,
+      entries              JSONB NOT NULL DEFAULT '[]'::jsonb,
+      ip                   TEXT,
+      user_agent           TEXT
+    )
+  `, 'maestro.os_generation_audit');
+
+  await runCompatibilityQuery(`
+    CREATE INDEX IF NOT EXISTS os_generation_audit_actor_idx
+      ON maestro.os_generation_audit (actor_user_id, created_at DESC)
+  `, 'os_generation_audit_actor_idx');
+
+  await runCompatibilityQuery(`
+    CREATE INDEX IF NOT EXISTS os_generation_audit_request_id_idx
+      ON maestro.os_generation_audit (request_id)
+  `, 'os_generation_audit_request_id_idx');
 }
 
 export default pool;

@@ -9,6 +9,8 @@ import JSZip from 'jszip';
 import { fetchJiraIssues, fetchAramidaIssues, fetchTensylonIssues, fetchPrevisaoMantaIssues, fetchPrevisaoTensylonIssues, attachToJiraIssue, updateJiraIssueFields, deleteJiraAttachment, fetchJiraFields, transitionJiraIssue } from '../services/jiraService.js';
 import { fetchAllProjects, fetchProjectsByIds, fetchDistinctDimensions } from '../services/mirrorProjectRepository.js';
 import { classifyAll } from '../services/classifierService.js';
+import { logOsGenerationAudit } from '../services/auditService.js';
+import { parseDimension, filterPlansByDimension } from '../utils/dimensionMatcher.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -506,7 +508,7 @@ async function processOsEntry(entry, proj, zip, req, fieldWarnings) {
 // Responsabilidade: validação HTTP, busca no banco, iteração e resposta ZIP.
 export const generateOS = async (req, res) => {
   try {
-    const { projects } = req.body;
+    const { projects, dimension, material } = req.body;
     if (!Array.isArray(projects) || !projects.length) {
       return res.status(400).json({ success: false, message: '"projects" array é obrigatório.' });
     }
@@ -519,10 +521,23 @@ export const generateOS = async (req, res) => {
     }
 
     const dbRows = await fetchProjectsByIds(uniqueIds);
-    const rowMap = new Map(dbRows.map(r => [r.id, r]));
+
+    // Filtra cutting_plans por dimensão para Aramida — caso contrário o PDF e
+    // os TXTs incluiriam anexos de planos de outras dimensões do mesmo projeto.
+    // Tensylon não tem filtro de dimensão (todos os planos vão).
+    const isTensylon = String(material || '').toLowerCase() === 'tensylon';
+    const targetDim  = isTensylon ? null : parseDimension(dimension);
+    const filteredRows = dbRows.map(row => {
+      if (!targetDim) return row;
+      const allPlans = row.cutting_plans || [];
+      const matched  = filterPlansByDimension(allPlans, targetDim);
+      return { ...row, cutting_plans: matched };
+    });
+    const rowMap = new Map(filteredRows.map(r => [r.id, r]));
 
     const zip = new JSZip();
     const failures = [];
+    const successes = [];
     const fieldWarnings = [];
     const reportLines = [
       'RELATÓRIO DE GERAÇÃO DE OS',
@@ -536,9 +551,38 @@ export const generateOS = async (req, res) => {
       const { log, failure } = await processOsEntry(entry, proj, zip, req, fieldWarnings);
       reportLines.push(...log, '─'.repeat(60));
       if (failure) failures.push(failure);
+      else successes.push({
+        jiraKey:      entry.jiraKey || null,
+        os_number:    String(entry.os_number || ''),
+        project_id:   proj?.id || null,
+        project_code: proj?.project || null,
+      });
     }
 
-    const successCount = projects.length - failures.length;
+    const successCount = successes.length;
+
+    const auditEntries = [
+      ...successes.map(s => ({ ...s, status: 'success' })),
+      ...failures.map(f => ({
+        status:    'failed',
+        jiraKey:   f.jiraKey || null,
+        os_number: String(f.os_number || ''),
+        phase:     f.phase || null,
+        type:      f.type  || null,
+        message:   f.message || null,
+      })),
+    ];
+    await logOsGenerationAudit({
+      req,
+      totals: {
+        requested:     projects.length,
+        success:       successCount,
+        failed:        failures.length,
+        fieldWarnings: fieldWarnings.length,
+      },
+      entries: auditEntries,
+    });
+
     if (successCount === 0) {
       return res.status(422).json({ success: false, message: 'Todas as OS falharam ao ser geradas.', failures });
     }

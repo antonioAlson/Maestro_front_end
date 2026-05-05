@@ -13,6 +13,7 @@ import { registrarGeracaoEspelhos } from '../utils/espelhos-logger.js';
 import { decrypt } from '../utils/crypto.js';
 import pool from '../config/database.js';
 import { fetchAllProjects } from '../services/mirrorProjectRepository.js';
+import { logProjectAudit } from '../services/auditService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -3116,11 +3117,21 @@ export const criarProject = async (req, res) => {
     `;
 
     const insertResult = await pool.query(insertQuery, values);
+    const created = insertResult.rows[0];
+
+    await logProjectAudit({
+      req,
+      action: 'CREATE',
+      projectId: created.id,
+      projectCode: created.project,
+      before: null,
+      after: created,
+    });
 
     return res.status(201).json({
       success: true,
       message: 'Projeto cadastrado com sucesso.',
-      data: insertResult.rows[0]
+      data: created
     });
   } catch (error) {
     console.error('❌ Erro ao criar projeto:', error);
@@ -3282,6 +3293,15 @@ export const atualizarProject = async (req, res) => {
       });
     }
 
+    const beforeResult = await pool.query(
+      'SELECT * FROM maestro.project WHERE id = $1 LIMIT 1',
+      [projectId]
+    );
+    if (beforeResult.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Projeto não encontrado para atualização.' });
+    }
+    const before = beforeResult.rows[0];
+
     const setClause = entries.map(([column], index) => `${column} = $${index + 1}`).join(', ');
     const values = entries.map(([, value]) => value);
     values.push(projectId);
@@ -3291,7 +3311,7 @@ export const atualizarProject = async (req, res) => {
         UPDATE maestro.project
         SET ${setClause}
         WHERE id = $${values.length}
-        RETURNING id, project, material_type, brand, model, roof_config, total_parts_qty, lid_parts_qty
+        RETURNING *
       `,
       values
     );
@@ -3299,11 +3319,30 @@ export const atualizarProject = async (req, res) => {
     if (updateResult.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Projeto não encontrado para atualização.' });
     }
+    const after = updateResult.rows[0];
+
+    await logProjectAudit({
+      req,
+      action: 'UPDATE',
+      projectId: after.id,
+      projectCode: after.project,
+      before,
+      after,
+    });
 
     return res.status(200).json({
       success: true,
       message: 'Projeto atualizado com sucesso.',
-      data: updateResult.rows[0]
+      data: {
+        id: after.id,
+        project: after.project,
+        material_type: after.material_type,
+        brand: after.brand,
+        model: after.model,
+        roof_config: after.roof_config,
+        total_parts_qty: after.total_parts_qty,
+        lid_parts_qty: after.lid_parts_qty,
+      }
     });
   } catch (error) {
     console.error('❌ Erro ao atualizar projeto:', error);
@@ -3405,11 +3444,22 @@ export const clonarProject = async (req, res) => {
       `,
       insertValues
     );
+    const cloned = cloneResult.rows[0];
+
+    await logProjectAudit({
+      req,
+      action: 'CLONE',
+      projectId: cloned.id,
+      projectCode: cloned.project,
+      before: null,
+      after: cloned,
+      metadata: { source_project_id: original.id, source_project_code: original.project },
+    });
 
     return res.status(201).json({
       success: true,
       message: `Projeto clonado com sucesso como ${clonedProjectName}.`,
-      data: cloneResult.rows[0]
+      data: cloned
     });
   } catch (error) {
     console.error('❌ Erro ao clonar projeto:', error);
