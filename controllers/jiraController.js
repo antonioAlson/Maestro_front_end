@@ -3477,6 +3477,12 @@ export const excluirProject = async (req, res) => {
       return res.status(400).json({ success: false, message: 'ID de projeto inválido.' });
     }
 
+    const beforeResult = await pool.query(
+      'SELECT * FROM maestro.project WHERE id = $1 LIMIT 1',
+      [projectId]
+    );
+    const before = beforeResult.rows[0] || null;
+
     const deleteResult = await pool.query(
       `
         DELETE FROM maestro.project
@@ -3489,6 +3495,15 @@ export const excluirProject = async (req, res) => {
     if (deleteResult.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Projeto não encontrado para exclusão.' });
     }
+
+    await logProjectAudit({
+      req,
+      action: 'DELETE',
+      projectId,
+      projectCode: deleteResult.rows[0].project,
+      before,
+      after: null,
+    });
 
     return res.status(200).json({
       success: true,

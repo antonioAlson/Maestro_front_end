@@ -1,6 +1,45 @@
 import pool from '../config/database.js';
+import { logProjectAudit } from '../services/auditService.js';
 
 const ALLOWED_ORDER_COLS = ['id', 'project', 'material_type', 'brand', 'model', 'total_parts_qty', 'created_at'];
+
+// Snapshot completo do projeto + planos, no formato gravado no audit (before/after).
+async function getProjectSnapshot(projectId) {
+  const result = await pool.query(
+    `SELECT p.id, p.project, p.material_type, p.brand, p.model,
+            p.roof_config, p.total_parts_qty, p.lid_parts_qty,
+            COALESCE(
+              json_agg(
+                json_build_object(
+                  'id',                cp.id,
+                  'plate_width',       cp.plate_width,
+                  'plate_height',      cp.plate_height,
+                  'linear_meters',     cp.linear_meters,
+                  'square_meters',     cp.square_meters,
+                  'notes',             cp.notes,
+                  'plate_consumption', cp.plate_consumption,
+                  'reviews',           cp.reviews
+                ) ORDER BY cp.id
+              ) FILTER (WHERE cp.id IS NOT NULL),
+              '[]'::json
+            ) AS cutting_plans
+       FROM maestro.project p
+       LEFT JOIN maestro.cutting_plan cp ON cp.project_id = p.id
+      WHERE p.id = $1
+      GROUP BY p.id`,
+    [projectId]
+  );
+  return result.rows[0] || null;
+}
+
+// Wrapper que captura o snapshot e chama logProjectAudit sem nunca quebrar o fluxo principal.
+async function safeAudit({ req, action, projectId, projectCode, before, after, metadata }) {
+  try {
+    await logProjectAudit({ req, action, projectId, projectCode, before, after, metadata });
+  } catch (err) {
+    console.error('[Audit] Falha ao auditar cutting-projects:', err.message);
+  }
+}
 
 // POST /api/cutting-projects
 export const criarProjectComPlanos = async (req, res) => {
@@ -78,6 +117,16 @@ export const criarProjectComPlanos = async (req, res) => {
     }
 
     await client.query('COMMIT');
+
+    const after = await getProjectSnapshot(projectId);
+    await safeAudit({
+      req,
+      action: 'CREATE',
+      projectId,
+      projectCode: after?.project ?? project,
+      before: null,
+      after,
+    });
 
     return res.status(201).json({
       success: true,
@@ -288,6 +337,8 @@ export const atualizarPlanoDeCorte = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Nenhum campo para atualizar.' });
     }
 
+    const before = await getProjectSnapshot(projectId);
+
     const keys = Object.keys(fields);
     const values = Object.values(fields);
     const setClauses = keys.map((k, i) => `${k} = $${i + 1}`).join(', ');
@@ -297,6 +348,17 @@ export const atualizarPlanoDeCorte = async (req, res) => {
       `UPDATE maestro.cutting_plan SET ${setClauses} WHERE id = $${values.length}`,
       values
     );
+
+    const after = await getProjectSnapshot(projectId);
+    await safeAudit({
+      req,
+      action: 'UPDATE',
+      projectId: Number(projectId),
+      projectCode: before?.project ?? after?.project,
+      before,
+      after,
+      metadata: { plan_id: Number(planId), plan_action: 'updated' },
+    });
 
     return res.status(200).json({ success: true, message: 'Plano de corte atualizado.' });
   } catch (error) {
@@ -311,11 +373,8 @@ export const adicionarPlanoDeCorte = async (req, res) => {
     const { id: projectId } = req.params;
     const plan = req.body || {};
 
-    const exists = await pool.query(
-      'SELECT id FROM maestro.project WHERE id = $1',
-      [projectId]
-    );
-    if (exists.rows.length === 0) {
+    const before = await getProjectSnapshot(projectId);
+    if (!before) {
       return res.status(404).json({ success: false, message: 'Projeto não encontrado.' });
     }
 
@@ -337,10 +396,22 @@ export const adicionarPlanoDeCorte = async (req, res) => {
       ]
     );
 
+    const newPlanId = result.rows[0].id;
+    const after = await getProjectSnapshot(projectId);
+    await safeAudit({
+      req,
+      action: 'UPDATE',
+      projectId: Number(projectId),
+      projectCode: before.project,
+      before,
+      after,
+      metadata: { plan_id: newPlanId, plan_action: 'added' },
+    });
+
     return res.status(201).json({
       success: true,
       message: 'Plano de corte adicionado.',
-      data: { id: result.rows[0].id }
+      data: { id: newPlanId }
     });
   } catch (error) {
     console.error('❌ Erro ao adicionar plano:', error);
@@ -407,6 +478,18 @@ export const clonarProjectComPlanos = async (req, res) => {
     }
 
     await client.query('COMMIT');
+
+    const after = await getProjectSnapshot(newId);
+    await safeAudit({
+      req,
+      action: 'CLONE',
+      projectId: newId,
+      projectCode: after?.project,
+      before: null,
+      after,
+      metadata: { source_project_id: orig.id, source_project_code: orig.project },
+    });
+
     return res.status(201).json({ success: true, message: 'Projeto clonado.', data: { id: newId } });
   } catch (error) {
     await client.query('ROLLBACK');
@@ -436,6 +519,11 @@ export const atualizarProjectFixo = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Nenhum campo para atualizar.' });
     }
 
+    const before = await getProjectSnapshot(id);
+    if (!before) {
+      return res.status(404).json({ success: false, message: 'Projeto não encontrado.' });
+    }
+
     const keys = Object.keys(fields);
     const values = Object.values(fields);
     const setClauses = keys.map((k, i) => `${k} = $${i + 1}`).join(', ');
@@ -449,6 +537,17 @@ export const atualizarProjectFixo = async (req, res) => {
     if (result.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Projeto não encontrado.' });
     }
+
+    const after = await getProjectSnapshot(id);
+    await safeAudit({
+      req,
+      action: 'UPDATE',
+      projectId: Number(id),
+      projectCode: after?.project ?? before.project,
+      before,
+      after,
+    });
+
     return res.status(200).json({ success: true, message: 'Projeto atualizado.' });
   } catch (error) {
     console.error('❌ Erro ao atualizar projeto:', error);
@@ -460,6 +559,9 @@ export const atualizarProjectFixo = async (req, res) => {
 export const excluirPlanoDeCorte = async (req, res) => {
   try {
     const { projectId, planId } = req.params;
+
+    const before = await getProjectSnapshot(projectId);
+
     const result = await pool.query(
       'DELETE FROM maestro.cutting_plan WHERE id = $1 AND project_id = $2 RETURNING id',
       [planId, projectId]
@@ -467,6 +569,18 @@ export const excluirPlanoDeCorte = async (req, res) => {
     if (result.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Plano de corte não encontrado.' });
     }
+
+    const after = await getProjectSnapshot(projectId);
+    await safeAudit({
+      req,
+      action: 'UPDATE',
+      projectId: Number(projectId),
+      projectCode: before?.project ?? after?.project,
+      before,
+      after,
+      metadata: { plan_id: Number(planId), plan_action: 'removed' },
+    });
+
     return res.status(200).json({ success: true, message: 'Plano de corte excluído.' });
   } catch (error) {
     console.error('❌ Erro ao excluir plano:', error);
@@ -479,6 +593,9 @@ export const excluirProjectComPlanos = async (req, res) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
+
+    const before = await getProjectSnapshot(id);
+
     await client.query('BEGIN');
     await client.query('DELETE FROM maestro.cutting_plan WHERE project_id = $1', [id]);
     const result = await client.query(
@@ -490,6 +607,16 @@ export const excluirProjectComPlanos = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Projeto não encontrado.' });
     }
     await client.query('COMMIT');
+
+    await safeAudit({
+      req,
+      action: 'DELETE',
+      projectId: Number(id),
+      projectCode: before?.project,
+      before,
+      after: null,
+    });
+
     return res.status(200).json({ success: true, message: 'Projeto excluído.' });
   } catch (error) {
     await client.query('ROLLBACK');
