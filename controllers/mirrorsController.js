@@ -394,9 +394,9 @@ async function syncOsToJira(userId, entry, folderName, pdfBuffer, proj, meta, lo
     const f = process.env.JIRA_FIELD_SQM_TENSYLON;
     if (f && sqm.tensylon != null) sqmFields[f] = toJiraStr(sqm.tensylon);
   } else {
-    if (sqm['8C']  != null) { const v = toJiraStr(sqm['8C']);  sqmFields.customfield_13625 = v; sqmFields.customfield_13633 = v; }
+    if (sqm['8C']  != null) { const v = toJiraStr(sqm['8C']);  sqmFields.customfield_13625 = v; sqmFields.customfield_13631 = v; }
     if (sqm['9C']  != null) { const v = toJiraStr(sqm['9C']);  sqmFields.customfield_13626 = v; sqmFields.customfield_13632 = v; }
-    if (sqm['11C'] != null) { const v = toJiraStr(sqm['11C']); sqmFields.customfield_13627 = v; sqmFields.customfield_13631 = v; }
+    if (sqm['11C'] != null) { const v = toJiraStr(sqm['11C']); sqmFields.customfield_13627 = v; sqmFields.customfield_13633 = v; }
   }
 
   if (Object.keys(sqmFields).length) {
