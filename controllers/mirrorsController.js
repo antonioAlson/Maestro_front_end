@@ -823,7 +823,7 @@ export async function appendFirstPage(mergedPdf, project, meta, packageNumber) {
 
   // ── Footer text ───────────────────────────────────────────────────────────
   const footerY = 80;
-  ['Avenida Tucunaré 421', 'Tamboré • Barueri – SP', 'CEP 06460-020', '+55 11 0000 0000', 'www.operacomposite.com']
+  ['Avenida Tucunaré 421', 'Tamboré • Barueri – SP', 'CEP 06460-020', '+55 11 0000 0000', 'www.opera.security']
     .forEach((line, i) => page.drawText(line, { x: marginLeft - 28, y: footerY - i * 10, size: 7, font, color: rgb(0.36, 0.36, 0.36) }));
 
   // ── Social icons ──────────────────────────────────────────────────────────
@@ -1017,7 +1017,7 @@ export async function appendLastPage(mergedPdf, project, meta) {
     'Tamboré • Barueri – SP',
     'CEP 06460-020',
     '+55 11 0000 0000',
-    'www.operacomposite.com'
+    'www.opera.security'
   ].forEach((line, i) => {
     page.drawText(line, {
       x: marginLeft - 28,

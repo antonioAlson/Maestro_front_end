@@ -383,7 +383,7 @@ async function criarEspelhoPdfDoCodigo(
     color: rgb(0.36, 0.36, 0.36)
   });
   
-  page.drawText('www.operacomposite.com', {
+  page.drawText('www.opera.security', {
     x: marginLeft - 28,
     y: footerY - 40,
     size: 7,
@@ -665,7 +665,7 @@ async function criarUltimaFolhaAramida(cardData, quantidadeTampas = 1) {
     color: rgb(0.36, 0.36, 0.36)
   });
 
-  page.drawText('www.operacomposite.com', {
+  page.drawText('www.opera.security', {
     x: marginLeft - 28,
     y: footerY - 40,
     size: 7,
