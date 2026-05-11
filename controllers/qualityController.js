@@ -176,206 +176,802 @@ export const generateCertificatePdf = async (req, res) => {
 // ─── PDF builder ──────────────────────────────────────────────────────────────
 async function buildCertificatePdf(cert) {
   const doc = await PDFDocument.create();
+
   const page = doc.addPage([841.89, 595.28]); // A4 landscape
   const { width, height } = page.getSize();
-  const fontBold = await doc.embedFont(StandardFonts.HelveticaBold);
-  const font = await doc.embedFont(StandardFonts.Helvetica);
+
+  const fontBold = await doc.embedFont(
+    StandardFonts.HelveticaBold
+  );
+
+  const font = await doc.embedFont(
+    StandardFonts.Helvetica
+  );
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // COLORS
+  // ──────────────────────────────────────────────────────────────────────────
 
   const dark = rgb(0.08, 0.08, 0.08);
   const gray = rgb(0.45, 0.45, 0.45);
   const blue = rgb(0.06, 0.30, 0.58);
-  const white = rgb(1, 1, 1);
   const lightGray = rgb(0.88, 0.88, 0.88);
 
-  const ml = 52;
-  const contentWidth = width - ml * 2;
+  // ──────────────────────────────────────────────────────────────────────────
+  // PATHS
+  // ──────────────────────────────────────────────────────────────────────────
 
   const backendRoot = path.join(__dirname, '..');
-  const logoPath = path.join(backendRoot, 'scripts', 'projetos', 'logo.png');
 
-  // ── Logo top-left ─────────────────────────────────────────────────────────
-  let logoDrawn = false;
-  if (fs.existsSync(logoPath)) {
-    try {
-      let logoBytes = await fs.promises.readFile(logoPath);
-      if (logoBytes.toString('utf8', 0, 8).startsWith('iVBORw0K')) {
-        logoBytes = Buffer.from(logoBytes.toString('utf8'), 'base64');
-      }
-      const logoImg = await doc.embedPng(logoBytes);
-      const logoW = 100;
-      const logoH = (logoImg.height / logoImg.width) * logoW;
-      page.drawImage(logoImg, { x: ml, y: height - 58 - logoH, width: logoW, height: logoH });
-      logoDrawn = true;
-    } catch { /* fallback abaixo */ }
-  }
-  if (!logoDrawn) {
-    page.drawText('OPERA', { x: ml, y: height - 55, size: 16, font: fontBold, color: blue });
-    page.drawText('Armouring Materials', { x: ml, y: height - 70, size: 8, font, color: gray });
-  }
+  const logoPath = path.join(
+    backendRoot,
+    'scripts',
+    'projetos',
+    'logo.png'
+  );
 
-  // ── "Kevlar GENUINE" badge top-right ─────────────────────────────────────
-  const badgeLines = ['MADE WITH', 'Kevlar.', 'GENUINE'];
-  let bx = width - ml - 90;
-  let by = height - 42;
-  page.drawRectangle({ x: bx - 6, y: by - 30, width: 92, height: 40, color: rgb(0.93, 0.93, 0.93), borderColor: lightGray, borderWidth: 0.5 });
-  page.drawText(badgeLines[0], { x: bx + 2, y: by + 4, size: 6, font, color: dark });
-  page.drawText(badgeLines[1], { x: bx + 2, y: by - 8, size: 10, font: fontBold, color: dark });
-  page.drawText(badgeLines[2], { x: bx + 2, y: by - 20, size: 7, font: fontBold, color: gray });
+  const kevlarLogoPath = path.join(
+    backendRoot,
+    'scripts',
+    'projetos',
+    'logo_kevlar.png'
+  );
 
-  // ── Divider line ──────────────────────────────────────────────────────────
-  const lineY = height - 90;
-  page.drawLine({ start: { x: ml, y: lineY }, end: { x: width - ml, y: lineY }, thickness: 1.2, color: blue });
+  const garantiaLogoPath = path.join(
+    backendRoot,
+    'scripts',
+    'projetos',
+    '5anos.png'
+  );
 
-  // ── Title ─────────────────────────────────────────────────────────────────
-  const title = `CERTIFICADO DE QUALIDADE Nº ${cert.numero}`;
-  const titleSize = 17;
-  const titleW = fontBold.widthOfTextAtSize(title, titleSize);
-  page.drawText(title, {
-    x: (width - titleW) / 2,
-    y: lineY - 30,
-    size: titleSize,
-    font: fontBold,
-    color: dark,
-  });
+  const assinaturaLogoPath = path.join(
+    backendRoot,
+    'scripts',
+    'projetos',
+    'assinatura_cordenador.png'
+  );
 
-  // ── Fields — dois colunas para aproveitar largura horizontal ─────────────
-  const fieldY0 = lineY - 60;
-  const labelSize = 10;
-  const rowGap = 20;
-  const col2X = width / 2 + 20;
+  const footerCandidates = [
+    path.join(
+      backendRoot,
+      'scripts',
+      'projetos',
+      'logo-footer.png'
+    ),
 
-  const produtos = Array.isArray(cert.produtos) ? cert.produtos : [];
-  const produtoNomes = produtos.map(p => p.nome).join('; ');
-  const produtoQtds = produtos.map(p => p.quantidade_m2).join('; ');
-
-  const dataEmissao = cert.data_emissao
-    ? new Date(cert.data_emissao).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })
-    : '';
-
-  const leftFields = [
-    ['Certificado:', cert.certificado || ''],
-    ['Painéis Balísticos:', cert.paineis_balisticos || ''],
-    ['Produto Ópera:', produtoNomes],
-    ['Quantidade (m²):', produtoQtds],
+    path.join(
+      backendRoot,
+      'scripts',
+      'projetos',
+      'footer.png'
+    ),
   ];
 
-  const rightFields = [
-    ['Nota Fiscal:', cert.nota_fiscal || ''],
-    ['Veículo:', cert.veiculo || ''],
-    ['Data de Emissão:', dataEmissao],
-  ];
+  const footerPath = footerCandidates.find(c =>
+    fs.existsSync(c)
+  );
 
-  let lfY = fieldY0;
-  for (const [label, value] of leftFields) {
-    const lw = fontBold.widthOfTextAtSize(label, labelSize);
-    page.drawText(label, { x: ml, y: lfY, size: labelSize, font: fontBold, color: dark });
-    page.drawText(String(value), { x: ml + lw + 6, y: lfY, size: labelSize, font, color: dark });
-    lfY -= rowGap;
-  }
+  // ──────────────────────────────────────────────────────────────────────────
+  // HELPERS
+  // ──────────────────────────────────────────────────────────────────────────
 
-  let rfY = fieldY0;
-  for (const [label, value] of rightFields) {
-    const lw = fontBold.widthOfTextAtSize(label, labelSize);
-    page.drawText(label, { x: col2X, y: rfY, size: labelSize, font: fontBold, color: dark });
-    page.drawText(String(value), { x: col2X + lw + 6, y: rfY, size: labelSize, font, color: dark });
-    rfY -= rowGap;
-  }
+  const embedImage = async filePath => {
+    const bytes =
+      await fs.promises.readFile(filePath);
 
-  // ── Divider ───────────────────────────────────────────────────────────────
-  let fy = Math.min(lfY, rfY) - 12;
-  page.drawLine({ start: { x: ml, y: fy }, end: { x: width - ml, y: fy }, thickness: 0.5, color: lightGray });
-  fy -= 18;
+    const ext = path
+      .extname(filePath)
+      .toLowerCase();
 
-  // ── Body text ─────────────────────────────────────────────────────────────
-  const material = cert.material || 'Dupont Kevlar® S745GR';
-  const nivel = cert.nivel || 'III-A';
-  const norma = cert.norma || 'ABNT NBR 15000:2020-2';
-  const bodySize = 9.5;
+    if (
+      ext === '.jpg' ||
+      ext === '.jpeg'
+    ) {
+      return doc.embedJpg(bytes);
+    }
 
-  const wrapText = (text, maxW, f, size) => {
+    return doc.embedPng(bytes);
+  };
+
+  const truncateText = (
+    text,
+    maxWidth,
+    fontRef,
+    size
+  ) => {
+    if (
+      fontRef.widthOfTextAtSize(
+        text,
+        size
+      ) <= maxWidth
+    ) {
+      return text;
+    }
+
+    while (
+      text.length > 0 &&
+      fontRef.widthOfTextAtSize(
+        `${text}...`,
+        size
+      ) > maxWidth
+    ) {
+      text = text.slice(0, -1);
+    }
+
+    return `${text}...`;
+  };
+
+  const wrapText = (
+    text,
+    maxW,
+    fontRef,
+    size
+  ) => {
     const words = text.split(' ');
+
     const lines = [];
+
     let line = '';
+
     for (const word of words) {
-      const test = line ? `${line} ${word}` : word;
-      if (f.widthOfTextAtSize(test, size) > maxW && line) {
+      const test = line
+        ? `${line} ${word}`
+        : word;
+
+      if (
+        fontRef.widthOfTextAtSize(
+          test,
+          size
+        ) > maxW &&
+        line
+      ) {
         lines.push(line);
         line = word;
       } else {
         line = test;
       }
     }
-    if (line) lines.push(line);
+
+    if (line) {
+      lines.push(line);
+    }
+
     return lines;
   };
 
-  const drawWrapped = (text, f, startY) => {
-    const lines = wrapText(text, contentWidth, f, bodySize);
+  const drawWrapped = (
+    text,
+    fontRef,
+    startY,
+    size,
+    maxWidth
+  ) => {
+    const lines = wrapText(
+      text,
+      maxWidth,
+      fontRef,
+      size
+    );
+
     let y = startY;
+
     for (const line of lines) {
-      page.drawText(line, { x: ml, y, size: bodySize, font: f, color: dark });
-      y -= 13;
+      page.drawText(line, {
+        x: ml,
+        y,
+        size,
+        font: fontRef,
+        color: dark,
+      });
+
+      y -= size + 4;
     }
+
     return y;
   };
 
-  const para1 = `A Ópera Armouring Materials certifica que o produto acima especificado foi produzido com o tecido de para-aramida ${material} e encontra-se em conformidade com o nível ${nivel} da norma ${norma}.`;
-  fy = drawWrapped(para1, font, fy);
+  // ──────────────────────────────────────────────────────────────────────────
+  // LAYOUT
+  // ──────────────────────────────────────────────────────────────────────────
 
-  const certs = Array.isArray(cert.certificados_conformidade) ? cert.certificados_conformidade : [];
-  if (certs.length > 0) {
-    fy -= 4;
-    const para2 = `A conformidade foi comprovada por meio de ensaios realizados pelo CPRM, conforme certificados de conformidade ${certs.join(' e ')}`;
-    fy = drawWrapped(para2, font, fy);
+  const ml = 52;
+
+  const contentWidth = width - ml * 2;
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // HEADER
+  // ──────────────────────────────────────────────────────────────────────────
+
+  const headerTop = height - 42;
+
+  let operaLogoHeight = 0;
+
+  let kevlarBottomY = headerTop;
+
+  // OPERA
+
+  if (fs.existsSync(logoPath)) {
+    try {
+      const logoImg =
+        await embedImage(logoPath);
+
+      const logoDim =
+        logoImg.scale(1);
+
+      const logoW = 120;
+
+      const logoH =
+        (logoDim.height /
+          logoDim.width) *
+        logoW;
+
+      operaLogoHeight = logoH;
+
+      page.drawImage(logoImg, {
+        x: ml,
+        y: headerTop - logoH,
+        width: logoW,
+        height: logoH,
+      });
+
+    } catch (err) {
+      console.error(
+        'Erro logo Opera:',
+        err
+      );
+    }
   }
 
-  // ── Guarantee badge (circle with number) ──────────────────────────────────
-  fy -= 30;
-  const cx = width / 2;
-  const radius = 26;
-  page.drawCircle({ x: cx, y: fy, size: radius, color: dark });
+  // KEVLAR
 
-  const numStr = String(cert.garantia_anos || 5);
-  const numSize = 24;
-  const numW = fontBold.widthOfTextAtSize(numStr, numSize);
-  page.drawText(numStr, {
-    x: cx - numW / 2,
-    y: fy - numSize / 3,
-    size: numSize,
-    font: fontBold,
-    color: white,
+  if (fs.existsSync(kevlarLogoPath)) {
+    try {
+      const kevlarImg =
+        await embedImage(
+          kevlarLogoPath
+        );
+
+      const kevlarDim =
+        kevlarImg.scale(1);
+
+      const kevlarW = 105;
+
+      const kevlarH =
+        (kevlarDim.height /
+          kevlarDim.width) *
+        kevlarW;
+
+      kevlarBottomY =
+        headerTop - kevlarH;
+
+      page.drawImage(kevlarImg, {
+        x: width - ml - kevlarW,
+        y: kevlarBottomY,
+        width: kevlarW,
+        height: kevlarH,
+      });
+
+    } catch (err) {
+      console.error(
+        'Erro logo Kevlar:',
+        err
+      );
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // DIVIDER
+  // ──────────────────────────────────────────────────────────────────────────
+
+  const lineY =
+    Math.min(
+      headerTop - operaLogoHeight,
+      kevlarBottomY
+    ) - 18;
+
+  page.drawLine({
+    start: { x: ml, y: lineY },
+    end: {
+      x: width - ml,
+      y: lineY,
+    },
+    thickness: 1.2,
+    color: blue,
   });
 
-  fy -= radius + 14;
-  const gLabel = `GARANTIA ${cert.garantia_anos || 5} ANOS`;
-  const gLabelSize = 11;
-  const gLabelW = fontBold.widthOfTextAtSize(gLabel, gLabelSize);
-  page.drawText(gLabel, { x: cx - gLabelW / 2, y: fy, size: gLabelSize, font: fontBold, color: dark });
+  // ──────────────────────────────────────────────────────────────────────────
+  // TITLE
+  // ──────────────────────────────────────────────────────────────────────────
 
-  // ── Signature ─────────────────────────────────────────────────────────────
-  fy -= 48;
-  const sigW = 160;
-  const sigX = cx - sigW / 2;
-  page.drawLine({ start: { x: sigX, y: fy }, end: { x: sigX + sigW, y: fy }, thickness: 1, color: dark });
+  const title =
+    `CERTIFICADO DE QUALIDADE Nº ${cert.numero || ''}`;
 
-  fy -= 13;
-  const sigLabel = 'Coordenador de Qualidade';
-  const sigLabelW = font.widthOfTextAtSize(sigLabel, 9);
-  page.drawText(sigLabel, { x: cx - sigLabelW / 2, y: fy, size: 9, font, color: dark });
+  const titleSize = 17;
 
-  // ── Footer ────────────────────────────────────────────────────────────────
-  const footerLineY = 40;
-  page.drawLine({ start: { x: ml, y: footerLineY }, end: { x: width - ml, y: footerLineY }, thickness: 0.5, color: lightGray });
+  const titleW =
+    fontBold.widthOfTextAtSize(
+      title,
+      titleSize
+    );
+
+  page.drawText(title, {
+    x: (width - titleW) / 2,
+    y: lineY - 32,
+    size: titleSize,
+    font: fontBold,
+    color: dark,
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // FIELDS
+  // ──────────────────────────────────────────────────────────────────────────
+
+  const fieldY0 = lineY - 55;
+
+  const labelSize = 10;
+
+  const rowGap = 12;
+
+  const col2X = width / 2 + 20;
+
+  const produtos = Array.isArray(
+    cert.produtos
+  )
+    ? cert.produtos
+    : [];
+
+  const produtoNomes = produtos
+    .map(p => p.nome)
+    .join('; ');
+
+  const produtoQtds = produtos
+    .map(p => p.quantidade_m2)
+    .join('; ');
+
+  const dataEmissao = cert.data_emissao
+    ? new Date(
+        cert.data_emissao
+      ).toLocaleDateString(
+        'pt-BR',
+        {
+          timeZone:
+            'America/Sao_Paulo',
+        }
+      )
+    : '';
+
+  const leftFields = [
+    [
+      'Certificado:',
+      cert.certificado || '',
+    ],
+
+    [
+      'Painéis Balísticos:',
+      cert.paineis_balisticos || '',
+    ],
+
+    [
+      'Produto Ópera:',
+      produtoNomes,
+    ],
+
+    [
+      'Quantidade (m²):',
+      produtoQtds,
+    ],
+  ];
+
+  const rightFields = [
+    [
+      'Nota Fiscal:',
+      cert.nota_fiscal || '',
+    ],
+
+    [
+      'Veículo:',
+      cert.veiculo || '',
+    ],
+
+    [
+      'Data de Emissão:',
+      dataEmissao,
+    ],
+  ];
+
+  let lfY = fieldY0;
+
+  for (const [label, value] of leftFields) {
+    const lw =
+      fontBold.widthOfTextAtSize(
+        label,
+        labelSize
+      );
+
+    page.drawText(label, {
+      x: ml,
+      y: lfY,
+      size: labelSize,
+      font: fontBold,
+      color: dark,
+    });
+
+    page.drawText(
+      truncateText(
+        String(value),
+        240,
+        font,
+        labelSize
+      ),
+      {
+        x: ml + lw + 6,
+        y: lfY,
+        size: labelSize,
+        font,
+        color: dark,
+      }
+    );
+
+    lfY -= rowGap;
+  }
+
+  let rfY = fieldY0;
+
+  for (const [label, value] of rightFields) {
+    const lw =
+      fontBold.widthOfTextAtSize(
+        label,
+        labelSize
+      );
+
+    page.drawText(label, {
+      x: col2X,
+      y: rfY,
+      size: labelSize,
+      font: fontBold,
+      color: dark,
+    });
+
+    page.drawText(
+      truncateText(
+        String(value),
+        220,
+        font,
+        labelSize
+      ),
+      {
+        x: col2X + lw + 6,
+        y: rfY,
+        size: labelSize,
+        font,
+        color: dark,
+      }
+    );
+
+    rfY -= rowGap;
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // CONTENT DIVIDER
+  // ──────────────────────────────────────────────────────────────────────────
+
+  let fy =
+    Math.min(lfY, rfY) - 10;
+
+  page.drawLine({
+    start: { x: ml, y: fy },
+    end: {
+      x: width - ml,
+      y: fy,
+    },
+    thickness: 0.5,
+    color: lightGray,
+  });
+
+  fy -= 22;
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // BODY
+  // ──────────────────────────────────────────────────────────────────────────
+
+  const material =
+    cert.material ||
+    'Dupont Kevlar® S745GR';
+
+  const nivel =
+    cert.nivel || 'III-A';
+
+  const norma =
+    cert.norma ||
+    'ABNT NBR 15000:2020-2';
+
+  const bodySize = 9.5;
+
+  const para1 =
+    `A Ópera Armouring Materials certifica que o produto acima especificado foi produzido com o tecido de para-aramida ${material} e encontra-se em conformidade com o nível ${nivel} da norma ${norma}.`;
+
+  fy = drawWrapped(
+    para1,
+    font,
+    fy,
+    bodySize,
+    contentWidth
+  );
+
+  const certs = Array.isArray(
+    cert.certificados_conformidade
+  )
+    ? cert.certificados_conformidade
+    : [];
+
+  if (certs.length > 0) {
+    fy -= 6;
+
+    const para2 =
+      `A conformidade foi comprovada por meio de ensaios realizados pelo CPRM, conforme certificados de conformidade ${certs.join(' e ')}`;
+
+    fy = drawWrapped(
+      para2,
+      font,
+      fy,
+      bodySize,
+      contentWidth
+    );
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // RESERVA DE ESPAÇO
+  // ──────────────────────────────────────────────────────────────────────────
+
+  const garantiaArea = 120;
+  const assinaturaArea = 80;
+  const footerArea = 90;
+
+  const minFy =
+    garantiaArea +
+    assinaturaArea +
+    footerArea;
+
+  if (fy < minFy) {
+    fy = minFy;
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // GARANTIA IMAGE
+  // ──────────────────────────────────────────────────────────────────────────
+
+  fy -= 20;
+
+  if (
+    fs.existsSync(garantiaLogoPath)
+  ) {
+    try {
+      const garantiaImg =
+        await embedImage(
+          garantiaLogoPath
+        );
+
+      const garantiaDim =
+        garantiaImg.scale(1);
+
+      const gW = 250;
+
+      const gH =
+        (garantiaDim.height /
+          garantiaDim.width) *
+        gW;
+
+      const garantiaY = Math.max(
+        fy - gH,
+        150
+      );
+
+      page.drawImage(
+        garantiaImg,
+        {
+          x: (width - gW) / 2,
+          y: garantiaY,
+          width: gW,
+          height: gH,
+        }
+      );
+
+      fy = garantiaY - 12;
+
+    } catch (err) {
+      console.error(
+        'Erro garantia:',
+        err
+      );
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // ASSINATURA IMAGE
+  // ──────────────────────────────────────────────────────────────────────────
+
+  if (
+    fs.existsSync(
+      assinaturaLogoPath
+    )
+  ) {
+    try {
+      const assinaturaImg =
+        await embedImage(
+          assinaturaLogoPath
+        );
+
+      const assinaturaDim =
+        assinaturaImg.scale(1);
+
+      const sigW = 220;
+
+      const sigH =
+        (assinaturaDim.height /
+          assinaturaDim.width) *
+        sigW;
+
+      const assinaturaY =
+        fy - sigH + 30;
+
+      page.drawImage(
+        assinaturaImg,
+        {
+          x: (width - sigW) / 2,
+          y: assinaturaY,
+          width: sigW,
+          height: sigH,
+        }
+      );
+
+      fy = assinaturaY - 5;
+
+    } catch (err) {
+      console.error(
+        'Erro assinatura:',
+        err
+      );
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // SIGNATURE LINE
+  // ──────────────────────────────────────────────────────────────────────────
+
+  const sigLineY = fy;
+
+  page.drawLine({
+    start: {
+      x: width / 2 - 80,
+      y: sigLineY,
+    },
+
+    end: {
+      x: width / 2 + 80,
+      y: sigLineY,
+    },
+
+    thickness: 1,
+    color: dark,
+  });
+
+  const sigText =
+    'Coordenador de Qualidade';
+
+  page.drawText(sigText, {
+    x:
+      width / 2 -
+      font.widthOfTextAtSize(
+        sigText,
+        9
+      ) /
+        2,
+
+    y: sigLineY - 14,
+
+    size: 9,
+
+    font,
+
+    color: dark,
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // FOOTER IMAGE
+  // ──────────────────────────────────────────────────────────────────────────
+
+  if (footerPath) {
+    try {
+      const footerImg =
+        await embedImage(
+          footerPath
+        );
+
+      const footerDim =
+        footerImg.scale(1);
+
+      const footerW = 620;
+
+      const footerH =
+        (footerDim.height /
+          footerDim.width) *
+        footerW;
+
+      page.drawImage(
+        footerImg,
+        {
+          x:
+            (width - footerW) /
+            2,
+
+          y: 0,
+
+          width: footerW,
+
+          height: footerH,
+        }
+      );
+
+    } catch (err) {
+      console.error(
+        'Erro footer:',
+        err
+      );
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // FOOTER TEXT
+  // ──────────────────────────────────────────────────────────────────────────
+
+  const footerLineY = 38;
+
+  page.drawLine({
+    start: {
+      x: ml,
+      y: footerLineY,
+    },
+
+    end: {
+      x: width - ml,
+      y: footerLineY,
+    },
+
+    thickness: 0.5,
+
+    color: lightGray,
+  });
 
   const footerLines = [
     'Ópera Armouring Materials',
-    'Avenida Tucunaré 421- Tamboré -Barueri – SP – 06460-020',
+
+    'Avenida Tucunaré 421 - Tamboré - Barueri - SP - 06460-020',
+
     'www.opera.security',
   ];
-  let footerY = footerLineY - 10;
+
+  let footerY =
+    footerLineY - 10;
+
   for (const line of footerLines) {
-    const lw = font.widthOfTextAtSize(line, 7);
-    page.drawText(line, { x: (width - lw) / 2, y: footerY, size: 7, font, color: gray });
+    const lw =
+      font.widthOfTextAtSize(
+        line,
+        7
+      );
+
+    page.drawText(line, {
+      x: (width - lw) / 2,
+
+      y: footerY,
+
+      size: 7,
+
+      font,
+
+      color: gray,
+    });
+
     footerY -= 10;
   }
 

@@ -1926,6 +1926,14 @@ export const imprimirOpsPorIds = async (req, res) => {
     });
     const uniqueEntries = Array.from(dedupMap.values());
 
+    // Identifica cards que não tiveram nenhum PDF encontrado (nem local nem Jira).
+    const cardsWithPdf = new Set(uniqueEntries.map((e) => normalizeCardId(e.cardId)));
+    for (const id of ids) {
+      if (!cardsWithPdf.has(normalizeCardId(id))) {
+        errors.push({ cardId: id, name: '-', message: 'Card sem PDF disponível' });
+      }
+    }
+
     if (uniqueEntries.length === 0) {
       return res.status(400).json({
         success: false,

@@ -10,6 +10,9 @@ import filesRoutes from './routes/files.js';
 import mirrorsRoutes from './routes/mirrors.js';
 import auditRoutes from './routes/audit.js';
 import qualityRoutes from './routes/quality.js';
+import plateSuppliersRoutes from './routes/plateSuppliers.js';
+import osPlanningRoutes from './routes/osPlanning.js';
+import productionPacksRoutes from './routes/productionPacks.js';
 import { ensureDatabaseCompatibility } from './config/database.js';
 
 // Carregar variáveis de ambiente
@@ -58,6 +61,9 @@ app.use('/api/files',            filesRoutes);
 app.use('/api/mirrors',          mirrorsRoutes);
 app.use('/api/audit',            auditRoutes);
 app.use('/api/quality',          qualityRoutes);
+app.use('/api/plate-suppliers',  plateSuppliersRoutes);
+app.use('/api/os-planning',      osPlanningRoutes);
+app.use('/api/production-packs', productionPacksRoutes);
 
 // Rota 404
 app.use((req, res) => {

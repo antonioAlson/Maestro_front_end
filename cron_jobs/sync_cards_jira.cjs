@@ -38,6 +38,9 @@ const client = axios.create({
 // SALVAR / UPDATE
 // ==========================
 async function salvarOuAtualizar(issue) {
+  // produced_at marca a PRIMEIRA transição para "Produzido" — não rescreve
+  // depois (COALESCE preserva o valor existente). Permite a tela do PCP
+  // exibir cards entregues por uma janela de 48h a partir desse instante.
   const query = `
     INSERT INTO maestro.jira_cards (
       key,
@@ -48,9 +51,15 @@ async function salvarOuAtualizar(issue) {
       veiculo,
       previsao,
       project,
+      fabrica_manta,
+      produced_at,
       last_updated_at
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+    VALUES (
+      $1, $2, $3, $4, $5, $6, $7, $8, $9,
+      CASE WHEN $4 = 'Produzido' THEN NOW() ELSE NULL END,
+      NOW()
+    )
     ON CONFLICT (key)
     DO UPDATE SET
       tipo = EXCLUDED.tipo,
@@ -60,6 +69,11 @@ async function salvarOuAtualizar(issue) {
       veiculo = EXCLUDED.veiculo,
       previsao = EXCLUDED.previsao,
       project = EXCLUDED.project,
+      fabrica_manta = EXCLUDED.fabrica_manta,
+      produced_at = COALESCE(
+        maestro.jira_cards.produced_at,
+        CASE WHEN EXCLUDED.status = 'Produzido' THEN NOW() ELSE NULL END
+      ),
       last_updated_at = NOW();
   `;
 
@@ -72,6 +86,7 @@ async function salvarOuAtualizar(issue) {
     issue.veiculo,
     issue.previsao || null,
     issue.project || null,
+    issue.fabricaManta || null,
   ];
 
   try {
@@ -89,7 +104,7 @@ async function buscarIssues(jql, nextPageToken = null) {
     jql,
     maxResults: 100,
     fields:
-      "issuetype,summary,status,customfield_10039,customfield_11298,customfield_10245,customfield_11353",
+      "issuetype,summary,status,customfield_10039,customfield_11298,customfield_10245,customfield_11353,customfield_11329",
   };
 
   if (nextPageToken) {
@@ -156,6 +171,15 @@ async function processar() {
             : projectRaw || "";
 
         // ==========================
+        // 🏭 FÁBRICA DE MANTA (dropdown — ex.: COMTEC, MATRIZ)
+        // ==========================
+        const fabricaMantaRaw = fields.customfield_11329;
+        const fabricaManta =
+          typeof fabricaMantaRaw === "object"
+            ? fabricaMantaRaw?.value
+            : fabricaMantaRaw || "";
+
+        // ==========================
         //  SALVAR
         // ==========================
         await salvarOuAtualizar({
@@ -167,6 +191,7 @@ async function processar() {
           veiculo,
           previsao: previsaoRaw,
           project,
+          fabricaManta,
         });
 
         total++;
