@@ -3,6 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
+import JsBarcode from 'jsbarcode';
 import QRCode from 'qrcode';
 
 import JSZip from 'jszip';
@@ -646,44 +647,101 @@ export const getJiraFieldsList = async (req, res) => {
 };
 
 // ─── PDF helpers ─────────────────────────────────────────────────────────────
-export async function appendFirstPage(mergedPdf, project, meta, packageNumber) {
+async function generateBarcodePng(value) {
+  const canvas = createCanvas(500, 120);
+
+  JsBarcode(canvas, value, {
+    format: 'CODE128',
+    displayValue: true,
+    fontSize: 18,
+    margin: 0,
+    height: 60,
+    width: 2,
+  });
+
+  return canvas.toBuffer('image/png');
+}
+
+export async function appendFirstPage(
+  mergedPdf,
+  project,
+  meta,
+  packageNumber
+) {
   const doc = await PDFDocument.create();
+
   const page = doc.addPage([595.28, 841.89]);
+
   const { width, height } = page.getSize();
 
-  const fontBold = await doc.embedFont(StandardFonts.HelveticaBold);
-  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const fontBold = await doc.embedFont(
+    StandardFonts.HelveticaBold
+  );
+
+  const font = await doc.embedFont(
+    StandardFonts.Helvetica
+  );
 
   const backendRoot = path.join(__dirname, '..');
 
   const footerCandidates = [
-    path.join(backendRoot, 'scripts', 'projetos', 'logo-footer.png'),
-    path.join(backendRoot, 'scripts', 'projetos', 'footer.png'),
+    path.join(
+      backendRoot,
+      'scripts',
+      'projetos',
+      'logo-footer.png'
+    ),
+    path.join(
+      backendRoot,
+      'scripts',
+      'projetos',
+      'footer.png'
+    ),
   ];
 
-  const footerPath = footerCandidates.find(c => fs.existsSync(c));
-  const topLogoPath = path.join(backendRoot, 'scripts', 'projetos', 'logo.png');
+  const footerPath = footerCandidates.find(c =>
+    fs.existsSync(c)
+  );
+
+  const topLogoPath = path.join(
+    backendRoot,
+    'scripts',
+    'projetos',
+    'logo.png'
+  );
 
   const marginLeft = 58;
 
   const isTensylonProject =
-    String(project.material_type || '').toUpperCase() === 'TENSYLON';
+    String(project.material_type || '').toUpperCase() ===
+    'TENSYLON';
 
   // ── Logo ──────────────────────────────────────────────────────────────────
   let yPos = height - 100;
 
   if (fs.existsSync(topLogoPath)) {
     try {
-      let logoBytes = await fs.promises.readFile(topLogoPath);
+      let logoBytes = await fs.promises.readFile(
+        topLogoPath
+      );
 
-      if (logoBytes.toString('utf8', 0, 8).startsWith('iVBORw0K')) {
-        logoBytes = Buffer.from(logoBytes.toString('utf8'), 'base64');
+      if (
+        logoBytes
+          .toString('utf8', 0, 8)
+          .startsWith('iVBORw0K')
+      ) {
+        logoBytes = Buffer.from(
+          logoBytes.toString('utf8'),
+          'base64'
+        );
       }
 
       const logoImg = await doc.embedPng(logoBytes);
 
       const logoW = 130;
-      const logoH = (logoImg.height / logoImg.width) * logoW;
+
+      const logoH =
+        (logoImg.height / logoImg.width) * logoW;
 
       page.drawImage(logoImg, {
         x: (width - logoW) / 2,
@@ -746,10 +804,17 @@ export async function appendFirstPage(mergedPdf, project, meta, packageNumber) {
   });
 
   // ── Material badge ────────────────────────────────────────────────────────
-  const tituloMaterial = isTensylonProject ? 'Tensylon' : 'Aramida';
+  const tituloMaterial = isTensylonProject
+    ? 'Tensylon'
+    : 'Aramida';
 
   const titleSize = 21;
-  const titleW = fontBold.widthOfTextAtSize(tituloMaterial, titleSize);
+
+  const titleW = fontBold.widthOfTextAtSize(
+    tituloMaterial,
+    titleSize
+  );
+
   const titleX = width / 2 - titleW / 2;
 
   yPos -= 50;
@@ -782,6 +847,7 @@ export async function appendFirstPage(mergedPdf, project, meta, packageNumber) {
     color
   ) => {
     const f = useBold ? fontBold : font;
+
     const v = String(text || '');
 
     const tw = f.widthOfTextAtSize(v, size);
@@ -815,23 +881,34 @@ export async function appendFirstPage(mergedPdf, project, meta, packageNumber) {
   yPos -= 60;
 
   const lineHeight = 45;
+
   const fieldSize = 16;
 
   const fields = [
-    ['Modelo:', `${project.brand || ' '} ${project.model || '-'}`],
+    [
+      'Modelo:',
+      `${project.brand || ' '} ${
+        project.model || '-'
+      }`,
+    ],
     ['Kit:', kit],
     ['Tipo de teto:', project.roof_config || '-'],
     ['Projeto:', project.project || '-'],
     ['Data:', new Date().toLocaleDateString('pt-BR')],
-    ['Quantidade de peças:', String(project.total_parts_qty || '-')],
+    [
+      'Quantidade de peças:',
+      String(project.total_parts_qty || '-'),
+    ],
     ['OS:', meta.osNumber || '-'],
   ];
 
   // ── Square meters ─────────────────────────────────────────────────────────
   const sqm = {};
 
-  for (const plan of (project.cutting_plans || [])) {
-    for (const [k, v] of Object.entries(plan.square_meters || {})) {
+  for (const plan of project.cutting_plans || []) {
+    for (const [k, v] of Object.entries(
+      plan.square_meters || {}
+    )) {
       if (
         v == null ||
         String(v).trim() === '' ||
@@ -840,7 +917,9 @@ export async function appendFirstPage(mergedPdf, project, meta, packageNumber) {
         continue;
       }
 
-      const n = parseFloat(String(v).replace(',', '.'));
+      const n = parseFloat(
+        String(v).replace(',', '.')
+      );
 
       sqm[k] = Number.isFinite(n)
         ? n.toFixed(3)
@@ -858,7 +937,10 @@ export async function appendFirstPage(mergedPdf, project, meta, packageNumber) {
       color: rgb(0, 0, 0),
     });
 
-    const lw = fontBold.widthOfTextAtSize(label, fieldSize);
+    const lw = fontBold.widthOfTextAtSize(
+      label,
+      fieldSize
+    );
 
     page.drawText(String(value), {
       x: marginLeft + lw + 6,
@@ -887,9 +969,11 @@ export async function appendFirstPage(mergedPdf, project, meta, packageNumber) {
       const colW = tableW / 3;
 
       const hdrH = 30;
+
       const valH = 26;
 
       const labelY = yPos - 6;
+
       const tableTopY = labelY - 10 - hdrH;
 
       page.drawText('Consumo (m²):', {
@@ -929,6 +1013,7 @@ export async function appendFirstPage(mergedPdf, project, meta, packageNumber) {
 
       for (let i = 0; i < 3; i++) {
         const key = consumoKeys[i];
+
         const cx = marginLeft + i * colW;
 
         const n = parseFloat(
@@ -994,15 +1079,23 @@ export async function appendFirstPage(mergedPdf, project, meta, packageNumber) {
   yPos -= 30;
 
   const qrSize = 92;
+
   const qrX = width / 2 - qrSize / 2;
+
   const qrY = yPos - qrSize;
 
   // ── Footer image ──────────────────────────────────────────────────────────
   if (footerPath) {
     try {
-      let fBytes = await fs.promises.readFile(footerPath);
+      let fBytes = await fs.promises.readFile(
+        footerPath
+      );
 
-      if (fBytes.toString('utf8', 0, 8).startsWith('iVBORw0K')) {
+      if (
+        fBytes
+          .toString('utf8', 0, 8)
+          .startsWith('iVBORw0K')
+      ) {
         fBytes = Buffer.from(
           fBytes.toString('utf8'),
           'base64'
@@ -1011,7 +1104,8 @@ export async function appendFirstPage(mergedPdf, project, meta, packageNumber) {
 
       const fImg = await doc.embedPng(fBytes);
 
-      const fH = (fImg.height / fImg.width) * width;
+      const fH =
+        (fImg.height / fImg.width) * width;
 
       page.drawImage(fImg, {
         x: 0,
@@ -1046,6 +1140,7 @@ export async function appendFirstPage(mergedPdf, project, meta, packageNumber) {
   const iconFill = rgb(0.08, 0.36, 0.56);
 
   const iconsY = footerY - 56;
+
   const iconStartX = marginLeft - 21;
 
   [
@@ -1063,10 +1158,10 @@ export async function appendFirstPage(mergedPdf, project, meta, packageNumber) {
       color: iconFill,
     });
 
-    const tw = fontBold.widthOfTextAtSize(label, size);
-
     page.drawText(label, {
-      x: cx - tw / 2,
+      x:
+        cx -
+        fontBold.widthOfTextAtSize(label, size) / 2,
       y: iconsY - size / 3,
       size,
       font: fontBold,
@@ -1077,13 +1172,15 @@ export async function appendFirstPage(mergedPdf, project, meta, packageNumber) {
   // ── Generation timestamp ──────────────────────────────────────────────────
   const now = new Date();
 
-  const pad = (n) => String(n).padStart(2, '0');
+  const pad = n => String(n).padStart(2, '0');
 
   const generatedAt =
     `Gerado em: ${pad(now.getDate())}/` +
     `${pad(now.getMonth() + 1)}/` +
     `${String(now.getFullYear()).slice(-2)} ` +
-    `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    `${pad(now.getHours())}:${pad(
+      now.getMinutes()
+    )}`;
 
   page.drawText(generatedAt, {
     x: marginLeft - 28,
@@ -1101,9 +1198,13 @@ export async function appendFirstPage(mergedPdf, project, meta, packageNumber) {
     height: qrSize,
   });
 
+  // ── Revision text ─────────────────────────────────────────────────────────
   const revText = 'FO 21.1 - REV. 1';
 
-  const revW = font.widthOfTextAtSize(revText, 7);
+  const revW = font.widthOfTextAtSize(
+    revText,
+    7
+  );
 
   page.drawText(revText, {
     x: qrX + qrSize / 2 - revW / 2,
@@ -1113,10 +1214,41 @@ export async function appendFirstPage(mergedPdf, project, meta, packageNumber) {
     color: rgb(0.42, 0.42, 0.42),
   });
 
-  // ── Merge ─────────────────────────────────────────────────────────────────
-  const built = await PDFDocument.load(await doc.save());
+  // ── Barcode ───────────────────────────────────────────────────────────────
+  const barcodeValue =
+    meta.osNumber ||
+    project.project ||
+    `PKG-${packageNumber}`;
 
-  const [copied] = await mergedPdf.copyPages(built, [0]);
+  const barcodeBytes =
+    await generateBarcodePng(barcodeValue);
+
+  const barcodeImg = await doc.embedPng(
+    barcodeBytes
+  );
+
+  const barcodeW = 140;
+
+  const barcodeH =
+    (barcodeImg.height / barcodeImg.width) *
+    barcodeW;
+
+  page.drawImage(barcodeImg, {
+    x: width / 2 - barcodeW / 2,
+    y: qrY - 62,
+    width: barcodeW,
+    height: barcodeH,
+  });
+
+  // ── Merge ─────────────────────────────────────────────────────────────────
+  const built = await PDFDocument.load(
+    await doc.save()
+  );
+
+  const [copied] = await mergedPdf.copyPages(
+    built,
+    [0]
+  );
 
   mergedPdf.addPage(copied);
 }
