@@ -3,9 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
-import JsBarcode from 'jsbarcode';
 import QRCode from 'qrcode';
-import { createCanvas } from 'canvas';
 
 import JSZip from 'jszip';
 import { fetchJiraIssues, fetchAramidaIssues, fetchTensylonIssues, fetchPrevisaoMantaIssues, fetchPrevisaoTensylonIssues, attachToJiraIssue, updateJiraIssueFields, deleteJiraAttachment, fetchJiraFields, transitionJiraIssue } from '../services/jiraService.js';
@@ -648,21 +646,6 @@ export const getJiraFieldsList = async (req, res) => {
 };
 
 // ─── PDF helpers ─────────────────────────────────────────────────────────────
-async function generateBarcodePng(value) {
-  const canvas = createCanvas(500, 120);
-
-  JsBarcode(canvas, value, {
-    format: 'CODE128',
-    displayValue: true,
-    fontSize: 18,
-    margin: 0,
-    height: 60,
-    width: 2,
-  });
-
-  return canvas.toBuffer('image/png');
-}
-
 export async function appendFirstPage(
   mergedPdf,
   project,
@@ -1213,32 +1196,6 @@ export async function appendFirstPage(
     size: 7,
     font,
     color: rgb(0.42, 0.42, 0.42),
-  });
-
-  // ── Barcode ───────────────────────────────────────────────────────────────
-  const barcodeValue =
-    meta.osNumber ||
-    project.project ||
-    `PKG-${packageNumber}`;
-
-  const barcodeBytes =
-    await generateBarcodePng(barcodeValue);
-
-  const barcodeImg = await doc.embedPng(
-    barcodeBytes
-  );
-
-  const barcodeW = 140;
-
-  const barcodeH =
-    (barcodeImg.height / barcodeImg.width) *
-    barcodeW;
-
-  page.drawImage(barcodeImg, {
-    x: width / 2 - barcodeW / 2,
-    y: qrY - 62,
-    width: barcodeW,
-    height: barcodeH,
   });
 
   // ── Merge ─────────────────────────────────────────────────────────────────
