@@ -2,17 +2,20 @@ import pool from '../config/database.js';
 import { UPLOAD_DIR } from '../middleware/upload.js';
 import path from 'path';
 import fs from 'fs';
+import {
+  ALLOWED_TYPES,
+  MIME_BY_TYPE,
+  PATTERN_VALIDATED,
+  LABEL_CONTENT_REGEX,
+  MATERIAL_ATTACHMENTS,
+  isTypeAllowedForMaterial,
+  buildPublicConfig,
+} from '../shared/attachmentTypes.js';
 
-const ALLOWED_MIME = {
-  infoproject:    ['application/pdf'],
-  label_8c:       ['text/plain'],
-  label_9c:       ['text/plain'],
-  label_11c:      ['text/plain'],
-  label_tensylon: ['text/plain'],
+// GET /api/files/attachment-types  (public — config only, no PII)
+export const getAttachmentTypes = (_req, res) => {
+  res.json({ success: true, data: buildPublicConfig() });
 };
-
-const ARAMIDA_TYPES  = ['infoproject', 'label_8c', 'label_9c', 'label_11c'];
-const TENSYLON_TYPES = ['infoproject', 'label_tensylon'];
 
 // POST /api/files/upload
 export const uploadFile = async (req, res) => {
@@ -24,18 +27,29 @@ export const uploadFile = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Arquivo não enviado.' });
     }
 
-    if (!type || !ALLOWED_MIME[type]) {
+    if (!type || !ALLOWED_TYPES.includes(type)) {
       fs.unlinkSync(file.path);
-      return res.status(400).json({ success: false, message: `Tipo inválido: "${type}". Tipos permitidos: ${Object.keys(ALLOWED_MIME).join(', ')}` });
+      return res.status(400).json({ success: false, message: `Tipo inválido: "${type}". Tipos permitidos: ${ALLOWED_TYPES.join(', ')}` });
     }
 
-    const allowedMimes = ALLOWED_MIME[type];
+    const allowedMimes = MIME_BY_TYPE[type];
     if (!allowedMimes.includes(file.mimetype)) {
       fs.unlinkSync(file.path);
       return res.status(400).json({
         success: false,
         message: `Arquivo inválido para tipo "${type}". Esperado: ${allowedMimes.join(', ')}. Recebido: ${file.mimetype}`,
       });
+    }
+
+    if (PATTERN_VALIDATED.includes(type)) {
+      const content = fs.readFileSync(file.path, 'utf8');
+      if (!LABEL_CONTENT_REGEX.test(content)) {
+        fs.unlinkSync(file.path);
+        return res.status(400).json({
+          success: false,
+          message: 'Os padrão XXXXX não encontrada',
+        });
+      }
     }
 
     // filename already is "uuid.ext" from multer diskStorage
@@ -68,7 +82,8 @@ export const downloadFile = async (req, res) => {
     if (!fs.existsSync(f.path)) {
       return res.status(404).json({ success: false, message: 'Arquivo não encontrado no disco.' });
     }
-    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(f.original_name)}"`);
+    const disposition = req.query.dl === '1' ? 'attachment' : 'inline';
+    res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(f.original_name)}"`);
     res.setHeader('Content-Type', f.mime_type);
     fs.createReadStream(f.path).pipe(res);
   } catch (error) {
@@ -99,9 +114,9 @@ export const attachFile = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Plano de corte não encontrado.' });
     }
 
-    const mt      = planRow.rows[0].material_type.toUpperCase();
-    const allowed = mt === 'TENSYLON' ? TENSYLON_TYPES : ARAMIDA_TYPES;
-    if (!allowed.includes(type)) {
+    const mt = planRow.rows[0].material_type.toUpperCase();
+    if (!isTypeAllowedForMaterial(mt, type)) {
+      const allowed = MATERIAL_ATTACHMENTS[mt] || [];
       return res.status(400).json({
         success: false,
         message: `Tipo "${type}" não permitido para material ${mt}. Permitidos: ${allowed.join(', ')}`,

@@ -17,14 +17,21 @@ const cache    = new Map();
  */
 const inFlight = new Map();
 
-const JQL_ARAMIDA =
-  `project = MANTA AND "fábrica de manta[dropdown]" = "CARBON OPACO" ` +
-  `AND status IN ("A Produzir", "🔴RECEBIDO NÃO LIBERADO")`;
+const ARAMIDA_STATUS = `status IN ("A Produzir", "🔴RECEBIDO NÃO LIBERADO")`;
+
+function escapeJql(value) {
+  return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+function buildAramidaJql(factory) {
+  const factoryClause = factory
+    ? `AND "fábrica de manta[dropdown]" = "${escapeJql(factory)}" `
+    : '';
+  return `project = MANTA ${factoryClause}AND ${ARAMIDA_STATUS}`;
+}
 
 const JQL_TENSYLON =
   `project = TENSYLON AND status IN ("A Produzir", "🔴RECEBIDO NÃO LIBERADO")`;
-
-const JQL_COMBINED = `(${JQL_ARAMIDA}) OR (${JQL_TENSYLON})`;
 
 const SITUACAO_FILTER =
   `("situação[short text]" ~ "🔴RECEBIDO NÃO LIBERADO" ` +
@@ -133,17 +140,21 @@ async function fetchByJql(userId, jql, cacheKey) {
  * @param {number} userId
  * @returns {Promise<JiraCard[]>}
  */
-export async function fetchJiraIssues(userId) {
-  return fetchByJql(userId, JQL_COMBINED, String(userId));
+export async function fetchJiraIssues(userId, factory) {
+  const jql = `(${buildAramidaJql(factory)}) OR (${JQL_TENSYLON})`;
+  const cacheKey = `${userId}:combined:${factory || 'all'}`;
+  return fetchByJql(userId, jql, cacheKey);
 }
 
 /**
  * Fetch open OS from the MANTA (Aramida) board only.
  * @param {number} userId
+ * @param {string} [factory] - optional "fábrica de manta" filter (e.g. "CARBON OPACO", "COMTEC")
  * @returns {Promise<JiraCard[]>}
  */
-export async function fetchAramidaIssues(userId) {
-  return fetchByJql(userId, JQL_ARAMIDA, `${userId}:aramida`);
+export async function fetchAramidaIssues(userId, factory) {
+  const cacheKey = `${userId}:aramida:${factory || 'all'}`;
+  return fetchByJql(userId, buildAramidaJql(factory), cacheKey);
 }
 
 /**

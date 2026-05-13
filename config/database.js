@@ -164,6 +164,69 @@ export async function ensureDatabaseCompatibility() {
   await ensureOsPrintAuditTable();
   await ensureProductionPackTable();
   await ensureOsPlanningPackId();
+  await ensureCronRunsTable();
+  await ensureCronJobsTables();
+}
+
+async function ensureCronJobsTables() {
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS maestro.cron_jobs (
+      id          SERIAL PRIMARY KEY,
+      name        TEXT NOT NULL UNIQUE,
+      description TEXT,
+      created_by  INTEGER REFERENCES maestro.users(id),
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at  TIMESTAMPTZ
+    )
+  `, 'maestro.cron_jobs');
+
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS maestro.cron_job_versions (
+      id                  BIGSERIAL PRIMARY KEY,
+      job_id              INTEGER NOT NULL REFERENCES maestro.cron_jobs(id) ON DELETE CASCADE,
+      version_number      NUMERIC(6,2) NOT NULL,
+      status              TEXT NOT NULL CHECK (status IN ('DVP','SAT','REL','OPE')),
+      cron_expression     TEXT NOT NULL,
+      code                TEXT NOT NULL,
+      notes               TEXT,
+      created_by          INTEGER REFERENCES maestro.users(id),
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+      status_changed_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      status_changed_by   INTEGER REFERENCES maestro.users(id),
+      CONSTRAINT cron_job_versions_job_ver_unique UNIQUE (job_id, version_number)
+    )
+  `, 'maestro.cron_job_versions');
+
+  // Apenas uma versão por job pode estar em OPE (a que será agendada).
+  await runCompatibilityQuery(`
+    CREATE UNIQUE INDEX IF NOT EXISTS cron_job_versions_ope_unique
+      ON maestro.cron_job_versions (job_id) WHERE status = 'OPE'
+  `, 'cron_job_versions_ope_unique');
+
+  await runCompatibilityQuery(`
+    CREATE INDEX IF NOT EXISTS cron_job_versions_job_idx
+      ON maestro.cron_job_versions (job_id, version_number DESC)
+  `, 'cron_job_versions_job_idx');
+}
+
+async function ensureCronRunsTable() {
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS maestro.cron_runs (
+      id                 BIGSERIAL PRIMARY KEY,
+      job_name           TEXT NOT NULL,
+      started_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+      finished_at        TIMESTAMPTZ,
+      status             TEXT NOT NULL CHECK (status IN ('running','success','error','skipped')),
+      records_processed  INTEGER,
+      error_message      TEXT,
+      details            JSONB
+    )
+  `, 'maestro.cron_runs');
+
+  await runCompatibilityQuery(`
+    CREATE INDEX IF NOT EXISTS cron_runs_job_started_idx
+      ON maestro.cron_runs (job_name, started_at DESC)
+  `, 'cron_runs_job_started_idx');
 }
 
 async function ensureJiraCardsProducedAt() {

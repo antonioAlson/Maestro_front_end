@@ -13,7 +13,11 @@ import qualityRoutes from './routes/quality.js';
 import plateSuppliersRoutes from './routes/plateSuppliers.js';
 import osPlanningRoutes from './routes/osPlanning.js';
 import productionPacksRoutes from './routes/productionPacks.js';
+import cronRunsRoutes from './routes/cronRuns.js';
+import cronJobsRoutes from './routes/cronJobs.js';
 import { ensureDatabaseCompatibility } from './config/database.js';
+import { loadOpeVersions } from './cron_jobs/scheduler.js';
+import { migrateLegacyCronJobs } from './cron_jobs/migrateLegacyJobs.js';
 
 // Carregar variáveis de ambiente
 dotenv.config();
@@ -78,6 +82,8 @@ app.use('/api/quality',          qualityRoutes);
 app.use('/api/plate-suppliers',  plateSuppliersRoutes);
 app.use('/api/os-planning',      osPlanningRoutes);
 app.use('/api/production-packs', productionPacksRoutes);
+app.use('/api/cron-runs',        cronRunsRoutes);
+app.use('/api/cron-jobs',        cronJobsRoutes);
 
 // Rota 404
 app.use((req, res) => {
@@ -121,6 +127,8 @@ function startServer(initialPort) {
 async function bootstrap() {
   try {
     await ensureDatabaseCompatibility();
+    await migrateLegacyCronJobs();
+    await loadOpeVersions();
     startServer(PORT);
   } catch (error) {
     console.error('❌ Erro ao validar estrutura do banco:', error);
@@ -141,6 +149,6 @@ process.on('uncaughtException', (err) => {
   process.exit(1);
 });
 
-//Carrega a automação de atualização dos cards no banco
-import "./cron_jobs/sync_cards_jira.cjs";
-import "./cron_jobs/update_comtec_cards.cjs";
+// Cron jobs legados (.cjs) foram migrados para maestro.cron_jobs/cron_job_versions
+// e agora são executados pelo scheduler central (loadOpeVersions). Os arquivos
+// .cjs permanecem em disco apenas como referência histórica.

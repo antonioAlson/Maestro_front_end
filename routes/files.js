@@ -1,9 +1,18 @@
 import express from 'express';
 import { upload } from '../middleware/upload.js';
-import { uploadFile, downloadFile, attachFile, removeAttachment } from '../controllers/filesController.js';
+import {
+  uploadFile,
+  downloadFile,
+  attachFile,
+  removeAttachment,
+  getAttachmentTypes,
+} from '../controllers/filesController.js';
 import { authenticate } from '../middleware/auth.js';
 
 const router = express.Router();
+
+// Config for the frontend (no PII — public)
+router.get('/attachment-types', getAttachmentTypes);
 
 // File storage
 router.post('/upload',  authenticate, upload.single('file'), uploadFile);

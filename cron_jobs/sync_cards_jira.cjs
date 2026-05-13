@@ -3,7 +3,9 @@ require("dotenv").config();
 const axios = require("axios");
 const cron = require("node-cron");
 const { Pool } = require("pg");
+const { recordRun, recordSkipped } = require("./recordRun.cjs");
 
+const JOB_NAME = "sync_cards_jira";
 let rodando = false;
 
 // ==========================
@@ -125,8 +127,7 @@ async function processar() {
 
   console.log(" Sync Jira iniciada...");
 
-  try {
-    do {
+  do {
       const data = await buscarIssues(JQL, nextPage);
       const issues = data.issues || [];
 
@@ -200,13 +201,10 @@ async function processar() {
       nextPage = data.nextPageToken;
       if (data.isLast) break;
 
-    } while (true);
+  } while (true);
 
-    console.log(`🏁 Total sincronizado: ${total}`);
-
-  } catch (err) {
-    console.error("❌ Erro geral:", err.message);
-  }
+  console.log(`🏁 Total sincronizado: ${total}`);
+  return total;
 }
 
 // ==========================
@@ -217,15 +215,23 @@ cron.schedule(
   async () => {
     if (rodando) {
       console.log("⏳ Ainda em execução, pulando...");
+      await recordSkipped(JOB_NAME, "Execução anterior ainda em andamento");
       return;
     }
 
     rodando = true;
-
     console.log("\n⏰ Rodando sincronização...");
-    await processar();
 
-    rodando = false;
+    try {
+      await recordRun(JOB_NAME, async (ctx) => {
+        const total = await processar();
+        ctx.setRecordsProcessed(total);
+      });
+    } catch (err) {
+      console.error("❌ Erro geral:", err.message);
+    } finally {
+      rodando = false;
+    }
   },
   {
     timezone: "America/Sao_Paulo",
@@ -239,7 +245,10 @@ const isProd = process.env.NODE_ENV === "production";
 
 if (isProd) {
   console.log("Executando em:", new Date().toISOString());
-  processar();
+  recordRun(JOB_NAME, async (ctx) => {
+    const total = await processar();
+    ctx.setRecordsProcessed(total);
+  }).catch((err) => console.error("❌ Erro geral:", err.message));
 } else {
   console.log("################");
   console.log(

@@ -8,6 +8,7 @@ import QRCode from 'qrcode';
 import JSZip from 'jszip';
 import { fetchJiraIssues, fetchAramidaIssues, fetchTensylonIssues, fetchPrevisaoMantaIssues, fetchPrevisaoTensylonIssues, attachToJiraIssue, updateJiraIssueFields, deleteJiraAttachment, fetchJiraFields, transitionJiraIssue } from '../services/jiraService.js';
 import { fetchAllProjects, fetchProjectsByIds, fetchDistinctDimensions } from '../services/mirrorProjectRepository.js';
+import pool from '../config/database.js';
 import { classifyAll } from '../services/classifierService.js';
 import { logOsGenerationAudit } from '../services/auditService.js';
 import { parseDimension, filterPlansByDimension } from '../utils/dimensionMatcher.js';
@@ -34,12 +35,15 @@ const __dirname = dirname(__filename);
 //   }
 //
 export const getProjects = async (req, res) => {
-  const { dimension = '1.60x3.00', material = 'aramida', search = '' } = req.query;
+  const { dimension = '1.60x3.00', material = 'aramida', search = '', factory = '' } = req.query;
+  const factoryFilter = String(factory).trim();
+  // Factory only applies to Aramida cards — Tensylon doesn't have fabrica_manta.
+  const effectiveFactory = material === 'tensylon' ? '' : factoryFilter;
 
   try {
     const [dbProjects, jiraCards] = await Promise.all([
       fetchAllProjects(),
-      fetchJiraIssues(req.user.id).catch(err => {
+      fetchJiraIssues(req.user.id, effectiveFactory || undefined).catch(err => {
         console.warn('[Mirrors] Jira indisponível:', err.message);
         return [];
       }),
@@ -73,12 +77,13 @@ export const getProjects = async (req, res) => {
 //   search     string  free-text filter applied server-side
 //
 export const getAramidaProjects = async (req, res) => {
-  const { dimension = '1.60x3.00', search = '' } = req.query;
+  const { dimension = '1.60x3.00', search = '', factory = '' } = req.query;
+  const factoryFilter = String(factory).trim();
 
   try {
     const [dbProjects, jiraCards] = await Promise.all([
       fetchAllProjects(),
-      fetchAramidaIssues(req.user.id).catch(err => {
+      fetchAramidaIssues(req.user.id, factoryFilter || undefined).catch(err => {
         console.warn('[Mirrors] Jira Aramida indisponível:', err.message);
         return [];
       }),
@@ -621,6 +626,27 @@ export const getDimensions = async (req, res) => {
     return res.json({ success: true, data: dimensions });
   } catch (error) {
     console.error('[Mirrors] getDimensions error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ─── GET /api/mirrors/factories ─────────────────────────────────────────────
+//
+// Returns distinct "fábrica de manta" values seen in maestro.jira_cards.
+// Response: { success: true, data: ["CARBON OPACO", "COMTEC", "MATRIZ"] }
+//
+export const getFactories = async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT DISTINCT TRIM(fabrica_manta) AS factory
+      FROM maestro.jira_cards
+      WHERE fabrica_manta IS NOT NULL
+        AND TRIM(fabrica_manta) <> ''
+      ORDER BY 1
+    `);
+    return res.json({ success: true, data: rows.map(r => r.factory) });
+  } catch (error) {
+    console.error('[Mirrors] getFactories error:', error);
     return res.status(500).json({ success: false, message: error.message });
   }
 };
