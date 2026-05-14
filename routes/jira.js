@@ -24,77 +24,41 @@ import {
   obterMarcasUnicas
 } from '../controllers/jiraController.js';
 import { authenticate } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/rbac.js';
 
 const router = express.Router();
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 20 * 1024 * 1024
-  }
+  limits: { fileSize: 20 * 1024 * 1024 }
 });
 
-// Buscar issues do Jira (requer autenticação)
-router.get('/issues', authenticate, getJiraIssues);
+// PCP — Jira proxy
+router.get('/issues',          authenticate, requirePermission('pcp_orders', 'read'),   getJiraIssues);
+router.get('/contec',          authenticate, requirePermission('pcp_orders', 'read'),   getContecIssues);
+router.get('/pcp-relatorio',   authenticate, requirePermission('pcp_reports', 'read'),  getPCPRelatorio);
+router.post('/reprogramar-massa',          authenticate, requirePermission('pcp_orders', 'update'), reprogramarEmMassa);
+router.post('/atualizar-datas-individuais', authenticate, requirePermission('pcp_orders', 'update'), atualizarDatasIndividuais);
+router.post('/buscar-arquivos',            authenticate, requirePermission('pcp_orders', 'read'),   buscarArquivosPorIds);
+router.post('/imprimir-ops',               authenticate, requirePermission('pcp_orders', 'read'),   imprimirOpsPorIds);
+router.get('/download-arquivo/:cardId/:directory/*',                        authenticate, requirePermission('pcp_orders', 'read'), downloadArquivo);
+router.get('/download-arquivo-jira/:cardId/:attachmentId/:filename',        authenticate, requirePermission('pcp_orders', 'read'), downloadArquivoJira);
 
-// Buscar issues CONTEC (Land Rover, Toyota, Jaguar)
-router.get('/contec', authenticate, getContecIssues);
+// Espelhos — generation + logs
+router.post('/gerar-espelhos', authenticate, requirePermission('espelhos', 'create'), upload.array('arquivoProjeto[]', 10), gerarEspelhos);
+router.get('/logs-espelhos',   authenticate, requirePermission('espelhos', 'read'),   obterLogsEspelhos);
 
-// Relatório geral de PCP (MANTA + TENSYLON, sem filtro de marca ou situação)
-router.get('/pcp-relatorio', authenticate, getPCPRelatorio);
+// Espelhos — projetos-espelhos (legacy)
+router.get('/projetos-espelhos',       authenticate, requirePermission('espelhos', 'read'), listarProjetosEspelhos);
+router.get('/projetos-espelhos-stats', authenticate, requirePermission('espelhos', 'read'), obterEstatisticasProjetos);
+router.get('/projetos-espelhos/:id',   authenticate, requirePermission('espelhos', 'read'), obterProjetoEspelho);
 
-// Reprogramar múltiplas issues em massa
-router.post('/reprogramar-massa', authenticate, reprogramarEmMassa);
-
-// Atualizar datas individuais (cada issue com data diferente)
-router.post('/atualizar-datas-individuais', authenticate, atualizarDatasIndividuais);
-
-// Buscar arquivos por IDs
-router.post('/buscar-arquivos', authenticate, buscarArquivosPorIds);
-
-// Mesclar e retornar PDF único para impressão em lote
-router.post('/imprimir-ops', authenticate, imprimirOpsPorIds);
-
-// Download de arquivo específico
-router.get('/download-arquivo/:cardId/:directory/*', authenticate, downloadArquivo);
-
-// Download de anexo do Jira
-router.get('/download-arquivo-jira/:cardId/:attachmentId/:filename', authenticate, downloadArquivoJira);
-
-// Gerar espelho (aceita múltiplos arquivos)
-router.post('/gerar-espelhos', authenticate, upload.array('arquivoProjeto[]', 10), gerarEspelhos);
-
-// Obter logs de geração de espelhos
-router.get('/logs-espelhos', authenticate, obterLogsEspelhos);
-
-// NOVOS ENDPOINTS - Gestão de Projetos/Espelhos
-// Listar projetos cadastrados
-router.get('/projetos-espelhos', authenticate, listarProjetosEspelhos);
-
-// Obter detalhes de um projeto específico
-router.get('/projetos-espelhos/:id', authenticate, obterProjetoEspelho);
-
-// Obter estatísticas dos projetos
-router.get('/projetos-espelhos-stats', authenticate, obterEstatisticasProjetos);
-
-// Obter marcas únicas da tabela maestro.project
-router.get('/projects/brands', authenticate, obterMarcasUnicas);
-
-// Listar projetos da tabela maestro.project
-router.get('/projects', authenticate, listarProjects);
-
-// Obter detalhes de um projeto
-router.get('/projects/:id', authenticate, obterProjectById);
-
-// Criar novo projeto na tabela maestro.project
-router.post('/projects', authenticate, criarProject);
-
-// Atualizar projeto
-router.put('/projects/:id', authenticate, atualizarProject);
-
-// Clonar projeto
-router.post('/projects/:id/clone', authenticate, clonarProject);
-
-// Excluir projeto
-router.delete('/projects/:id', authenticate, excluirProject);
+// Espelhos — maestro.project CRUD
+router.get('/projects/brands',  authenticate, requirePermission('espelhos', 'read'),   obterMarcasUnicas);
+router.get('/projects',         authenticate, requirePermission('espelhos', 'read'),   listarProjects);
+router.get('/projects/:id',     authenticate, requirePermission('espelhos', 'read'),   obterProjectById);
+router.post('/projects',        authenticate, requirePermission('espelhos', 'create'), criarProject);
+router.put('/projects/:id',     authenticate, requirePermission('espelhos', 'update'), atualizarProject);
+router.post('/projects/:id/clone', authenticate, requirePermission('espelhos', 'clone'),  clonarProject);
+router.delete('/projects/:id',  authenticate, requirePermission('espelhos', 'delete'), excluirProject);
 
 export default router;

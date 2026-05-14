@@ -8,6 +8,8 @@ import {
   getAttachmentTypes,
 } from '../controllers/filesController.js';
 import { authenticate } from '../middleware/auth.js';
+import { authenticateFlexible } from '../middleware/authFlexible.js';
+import { requirePermission } from '../middleware/rbac.js';
 
 const router = express.Router();
 
@@ -15,11 +17,12 @@ const router = express.Router();
 router.get('/attachment-types', getAttachmentTypes);
 
 // File storage
-router.post('/upload',  authenticate, upload.single('file'), uploadFile);
-router.get('/:id',      downloadFile); // no auth — UUID is unguessable
+router.post('/upload', authenticate, requirePermission('cutting_attachments', 'upload'), upload.single('file'), uploadFile);
+// §14.5 — download requires auth; accepts Bearer header OR ?token= query param for browser links
+router.get('/:id', authenticateFlexible, downloadFile);
 
 // Cutting plan attachments
-router.post('/cutting-plan/:id/attachments',         authenticate, attachFile);
-router.delete('/cutting-plan/:id/attachments/:type', authenticate, removeAttachment);
+router.post('/cutting-plan/:id/attachments',         authenticate, requirePermission('cutting_attachments', 'upload'),   attachFile);
+router.delete('/cutting-plan/:id/attachments/:type', authenticate, requirePermission('cutting_attachments', 'remove'),   removeAttachment);
 
 export default router;

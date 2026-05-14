@@ -15,9 +15,11 @@ import osPlanningRoutes from './routes/osPlanning.js';
 import productionPacksRoutes from './routes/productionPacks.js';
 import cronRunsRoutes from './routes/cronRuns.js';
 import cronJobsRoutes from './routes/cronJobs.js';
+import cuttingRomaneioRoutes from './routes/cuttingRomaneio.js';
 import { ensureDatabaseCompatibility } from './config/database.js';
 import { loadOpeVersions } from './cron_jobs/scheduler.js';
 import { migrateLegacyCronJobs } from './cron_jobs/migrateLegacyJobs.js';
+import { startRoleExpirationJob } from './jobs/roleExpirationJob.js';
 
 // Carregar variáveis de ambiente
 dotenv.config();
@@ -44,7 +46,7 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Step-Up-Token'],
   exposedHeaders: ['Content-Disposition', 'X-OS-Failures', 'X-OS-Field-Warnings']
 }));
 app.options('*', cors());
@@ -84,6 +86,7 @@ app.use('/api/os-planning',      osPlanningRoutes);
 app.use('/api/production-packs', productionPacksRoutes);
 app.use('/api/cron-runs',        cronRunsRoutes);
 app.use('/api/cron-jobs',        cronJobsRoutes);
+app.use('/api/cutting-romaneio', cuttingRomaneioRoutes);
 
 // Rota 404
 app.use((req, res) => {
@@ -129,6 +132,7 @@ async function bootstrap() {
     await ensureDatabaseCompatibility();
     await migrateLegacyCronJobs();
     await loadOpeVersions();
+    startRoleExpirationJob();
     startServer(PORT);
   } catch (error) {
     console.error('❌ Erro ao validar estrutura do banco:', error);

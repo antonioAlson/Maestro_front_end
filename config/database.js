@@ -112,11 +112,6 @@ async function ensureCuttingPlansTable() {
 export async function ensureDatabaseCompatibility() {
   await runCompatibilityQuery(`
     ALTER TABLE IF EXISTS maestro.users
-    ADD COLUMN IF NOT EXISTS menu_access JSONB NOT NULL DEFAULT '[]'::jsonb;
-  `, 'maestro.users.menu_access');
-
-  await runCompatibilityQuery(`
-    ALTER TABLE IF EXISTS maestro.users
     ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
   `, 'maestro.users.updated_at');
 
@@ -166,6 +161,8 @@ export async function ensureDatabaseCompatibility() {
   await ensureOsPlanningPackId();
   await ensureCronRunsTable();
   await ensureCronJobsTables();
+  await ensureUserSecurityColumns();
+  await ensureRbacTables();
 }
 
 async function ensureCronJobsTables() {
@@ -368,6 +365,170 @@ async function ensureOsPrintAuditTable() {
     CREATE INDEX IF NOT EXISTS os_print_audit_request_id_idx
       ON maestro.os_print_audit (request_id)
   `, 'os_print_audit_request_id_idx');
+}
+
+async function ensureUserSecurityColumns() {
+  // is_master: bypass RBAC para bootstrap e troubleshooting (§3 da spec)
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.users
+    ADD COLUMN IF NOT EXISTS is_master BOOLEAN NOT NULL DEFAULT false;
+  `, 'maestro.users.is_master');
+
+  // Timeout de sessão configurável por usuário (§14.1)
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.users
+    ADD COLUMN IF NOT EXISTS idle_timeout_enabled BOOLEAN NOT NULL DEFAULT true;
+  `, 'maestro.users.idle_timeout_enabled');
+
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.users
+    ADD COLUMN IF NOT EXISTS idle_timeout_minutes SMALLINT NOT NULL DEFAULT 30;
+  `, 'maestro.users.idle_timeout_minutes');
+
+  // Lockout temporário após N tentativas de login (§14.2)
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.users
+    ADD COLUMN IF NOT EXISTS locked_until TIMESTAMP;
+  `, 'maestro.users.locked_until');
+
+  // Força troca de senha no próximo login (§14.3)
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.users
+    ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT false;
+  `, 'maestro.users.must_change_password');
+
+  // Step-up re-auth token hash + expiração (§14.4)
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.users
+    ADD COLUMN IF NOT EXISTS step_up_token_hash TEXT;
+  `, 'maestro.users.step_up_token_hash');
+
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.users
+    ADD COLUMN IF NOT EXISTS step_up_expires TIMESTAMP;
+  `, 'maestro.users.step_up_expires');
+
+  // Soft delete: preserva integridade de audit FKs (§14.7)
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.users
+    ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP;
+  `, 'maestro.users.deleted_at');
+
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.users
+    ADD COLUMN IF NOT EXISTS deleted_by INTEGER REFERENCES maestro.users(id);
+  `, 'maestro.users.deleted_by');
+
+  // Última atividade para badge de "ativo/inativo" no painel admin (§15.12)
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.users
+    ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP;
+  `, 'maestro.users.last_login_at');
+}
+
+async function ensureRbacTables() {
+  // Roles — agrupamento nomeado de permissões
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS maestro.roles (
+      id          SERIAL PRIMARY KEY,
+      name        VARCHAR(60) NOT NULL UNIQUE,
+      description TEXT,
+      is_system   BOOLEAN NOT NULL DEFAULT false,
+      created_at  TIMESTAMP NOT NULL DEFAULT now(),
+      updated_at  TIMESTAMP NOT NULL DEFAULT now()
+    )
+  `, 'maestro.roles');
+
+  // Permissions — par imutável (resource, action)
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS maestro.permissions (
+      id          SERIAL PRIMARY KEY,
+      resource    VARCHAR(60) NOT NULL,
+      action      VARCHAR(30) NOT NULL,
+      description TEXT,
+      created_at  TIMESTAMP NOT NULL DEFAULT now(),
+      UNIQUE (resource, action)
+    )
+  `, 'maestro.permissions');
+
+  await runCompatibilityQuery(`
+    CREATE INDEX IF NOT EXISTS idx_permissions_resource
+      ON maestro.permissions (resource)
+  `, 'idx_permissions_resource');
+
+  // N:N Role × Permission
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS maestro.role_permissions (
+      role_id       INT NOT NULL REFERENCES maestro.roles(id)       ON DELETE CASCADE,
+      permission_id INT NOT NULL REFERENCES maestro.permissions(id) ON DELETE CASCADE,
+      created_at    TIMESTAMP NOT NULL DEFAULT now(),
+      PRIMARY KEY (role_id, permission_id)
+    )
+  `, 'maestro.role_permissions');
+
+  // N:N User × Role (com expiração opcional — §15.4)
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS maestro.user_roles (
+      user_id    INT NOT NULL REFERENCES maestro.users(id) ON DELETE CASCADE,
+      role_id    INT NOT NULL REFERENCES maestro.roles(id) ON DELETE CASCADE,
+      granted_by INT REFERENCES maestro.users(id),
+      expires_at TIMESTAMP,
+      created_at TIMESTAMP NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id, role_id)
+    )
+  `, 'maestro.user_roles');
+
+  // Auditoria de decisões e mudanças de acesso
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS maestro.access_audit (
+      id             BIGSERIAL PRIMARY KEY,
+      user_id        INT REFERENCES maestro.users(id),
+      user_email     VARCHAR(255),
+      event_type     VARCHAR(40) NOT NULL,
+      resource       VARCHAR(60),
+      action         VARCHAR(30),
+      target_user_id INT REFERENCES maestro.users(id),
+      details        JSONB,
+      ip             VARCHAR(60),
+      user_agent     TEXT,
+      created_at     TIMESTAMP NOT NULL DEFAULT now()
+    )
+  `, 'maestro.access_audit');
+
+  await runCompatibilityQuery(`
+    CREATE INDEX IF NOT EXISTS idx_access_audit_user
+      ON maestro.access_audit (user_id)
+  `, 'idx_access_audit_user');
+
+  await runCompatibilityQuery(`
+    CREATE INDEX IF NOT EXISTS idx_access_audit_event
+      ON maestro.access_audit (event_type)
+  `, 'idx_access_audit_event');
+
+  await runCompatibilityQuery(`
+    CREATE INDEX IF NOT EXISTS idx_access_audit_created
+      ON maestro.access_audit (created_at DESC)
+  `, 'idx_access_audit_created');
+
+  // Overrides por usuário — deny/grant pontuais sem criar role nova (§14.6)
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS maestro.user_permission_overrides (
+      id            SERIAL PRIMARY KEY,
+      user_id       INT NOT NULL REFERENCES maestro.users(id)       ON DELETE CASCADE,
+      permission_id INT NOT NULL REFERENCES maestro.permissions(id) ON DELETE CASCADE,
+      effect        VARCHAR(10) NOT NULL CHECK (effect IN ('grant', 'deny')),
+      reason        TEXT,
+      granted_by    INT REFERENCES maestro.users(id),
+      expires_at    TIMESTAMP,
+      created_at    TIMESTAMP NOT NULL DEFAULT now(),
+      UNIQUE (user_id, permission_id)
+    )
+  `, 'maestro.user_permission_overrides');
+
+  await runCompatibilityQuery(`
+    CREATE INDEX IF NOT EXISTS idx_upo_user
+      ON maestro.user_permission_overrides (user_id)
+  `, 'idx_upo_user');
 }
 
 async function ensureProductionPackTable() {

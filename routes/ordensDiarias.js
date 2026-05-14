@@ -6,19 +6,13 @@ import {
   deleteOrdemDiaria
 } from '../controllers/ordensDiariasController.js';
 import { authenticate } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/rbac.js';
 
 const router = express.Router();
 
-// Listar ordens diárias (com filtros opcionais)
-router.get('/', authenticate, getOrdensDiarias);
-
-// Criar nova ordem diária
-router.post('/', authenticate, createOrdemDiaria);
-
-// Atualizar ordem diária
-router.put('/:id', authenticate, updateOrdemDiaria);
-
-// Deletar ordem diária
-router.delete('/:id', authenticate, deleteOrdemDiaria);
+router.get('/',    authenticate, requirePermission('pcp_orders', 'read'),   getOrdensDiarias);
+router.post('/',   authenticate, requirePermission('pcp_orders', 'create'), createOrdemDiaria);
+router.put('/:id', authenticate, requirePermission('pcp_orders', 'update'), updateOrdemDiaria);
+router.delete('/:id', authenticate, requirePermission('pcp_orders', 'delete'), deleteOrdemDiaria);
 
 export default router;

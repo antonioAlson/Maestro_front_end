@@ -7,13 +7,14 @@ import {
   registrarImpressao,
 } from '../controllers/osPlanningController.js';
 import { authenticate } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/rbac.js';
 
 const router = express.Router();
 
-router.get('/',                          authenticate, listarPlanejamento);
-router.patch('/:cardKey/material',       authenticate, atribuirMaterial);
-router.delete('/:cardKey/material',      authenticate, desvincularMaterial);
-router.patch('/:cardKey/pack',           authenticate, moverParaPack);
-router.post('/print',                    authenticate, registrarImpressao);
+router.get('/',                    authenticate, requirePermission('pcp_orders', 'read'),   listarPlanejamento);
+router.patch('/:cardKey/material', authenticate, requirePermission('pcp_orders', 'update'), atribuirMaterial);
+router.delete('/:cardKey/material', authenticate, requirePermission('pcp_orders', 'update'), desvincularMaterial);
+router.patch('/:cardKey/pack',     authenticate, requirePermission('pcp_orders', 'update'), moverParaPack);
+router.post('/print',              authenticate, requirePermission('pcp_orders', 'read'),   registrarImpressao);
 
 export default router;

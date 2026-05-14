@@ -8,14 +8,15 @@ import {
   reordenarItens,
 } from '../controllers/productionPackController.js';
 import { authenticate } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/rbac.js';
 
 const router = express.Router();
 
-router.get('/',                    authenticate, listarPacks);
-router.post('/',                   authenticate, criarPack);
-router.patch('/reorder',           authenticate, reordenarPacks);
-router.patch('/:id',               authenticate, atualizarPack);
-router.delete('/:id',              authenticate, excluirPack);
-router.patch('/:id/items/reorder', authenticate, reordenarItens);
+router.get('/',                    authenticate, requirePermission('pcp_acompanhamento', 'read'), listarPacks);
+router.post('/',                   authenticate, requirePermission('pcp_orders', 'update'),       criarPack);
+router.patch('/reorder',           authenticate, requirePermission('pcp_orders', 'update'),       reordenarPacks);
+router.patch('/:id',               authenticate, requirePermission('pcp_orders', 'update'),       atualizarPack);
+router.delete('/:id',              authenticate, requirePermission('pcp_orders', 'update'),       excluirPack);
+router.patch('/:id/items/reorder', authenticate, requirePermission('pcp_orders', 'update'),       reordenarItens);
 
 export default router;

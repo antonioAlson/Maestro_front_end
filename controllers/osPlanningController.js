@@ -132,23 +132,18 @@ async function fetchPlanningRows() {
 // Classifica uma linha em uma das 5 categorias e devolve tags acessórias.
 function classifyRow(row) {
   const status = String(row.jira_status || '').trim();
-  const isProduced = status.toUpperCase() === PRODUCED_STATUS || !!row.jira_produced_at;
+  const isProduced = status.toUpperCase() === PRODUCED_STATUS;
 
-  // ENTREGUE: card já saiu como produzido (visível por 48h via filtro SQL).
+  // ENTREGUE: somente cards com status atual "Produzido" (visíveis por 48h via filtro SQL).
   if (isProduced) {
     return { category: 'entregue', tags: [], issues: [] };
   }
 
   const hasMaterial = !!(row.plate_supplier_id && row.plate_size_id);
 
-  // Tensylon não exige vínculo de placa — detecta pelo prefixo do card Jira
-  // (TENSYLON-xxx) ou, se já houver projeto vinculado, pelo material_type.
-  const isTensylonCard =
-    String(row.card_key || '').toUpperCase().startsWith('TENSYLON-') ||
-    String(row.project_material_type || '').toUpperCase() === 'TENSYLON';
-
+  // Regra atual: sem fornecedor/tamanho de placa vinculado fica em aguardando material.
   // AGUARDANDO PLANEJAMENTO DE MATERIAL
-  if (!hasMaterial && !isTensylonCard) {
+  if (!hasMaterial) {
     return { category: 'aguardando_material', tags: [], issues: [] };
   }
 
@@ -206,7 +201,10 @@ function serializeRow(row) {
   // Regra de exibição: OS já impressa aparece como "Em Produção" na UI,
   // independentemente do status original do Jira. O valor no banco NÃO é
   // alterado — a sobrescrita acontece apenas na resposta da API.
-  const displayStatus = row.last_printed_at ? 'Em Produção' : (row.jira_status || '');
+  const rawStatus = String(row.jira_status || '').trim();
+  const displayStatus = row.last_printed_at && rawStatus.toUpperCase() !== PRODUCED_STATUS
+    ? 'Em Produção'
+    : (row.jira_status || '');
   return {
     card_key: row.card_key,
     os_numero: row.os_numero || extractOsFromResumo(row.jira_resumo),
