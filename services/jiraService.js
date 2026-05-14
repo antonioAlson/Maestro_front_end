@@ -224,6 +224,35 @@ export async function deleteJiraAttachment(userId, attachmentId) {
 }
 
 /**
+ * List Jira attachments for an issue.
+ * @param {number} userId
+ * @param {string} issueKey
+ * @returns {Promise<Array<{id:string, filename:string, mimeType:string, size:number}>>}
+ */
+export async function listJiraIssueAttachments(userId, issueKey) {
+  const jiraUrl = process.env.JIRA_URL;
+  if (!jiraUrl) throw new Error('JIRA_URL não configurado');
+
+  const { email, apiToken } = await getCredentials(userId);
+  const authHeader = `Basic ${Buffer.from(`${email}:${apiToken}`).toString('base64')}`;
+
+  const resp = await axios.get(
+    `${jiraUrl}/rest/api/3/issue/${encodeURIComponent(issueKey)}?fields=attachment`,
+    {
+      headers: { Authorization: authHeader, Accept: 'application/json' },
+      timeout: 15_000,
+    }
+  );
+
+  return (resp.data?.fields?.attachment || []).map((attachment) => ({
+    id:       attachment.id,
+    filename: attachment.filename || '',
+    mimeType: attachment.mimeType || '',
+    size:     attachment.size || 0,
+  }));
+}
+
+/**
  * Update specific fields on a Jira issue (e.g. custom number fields).
  *
  * @param {number} userId

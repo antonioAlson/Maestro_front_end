@@ -1,6 +1,20 @@
 import pool from '../config/database.js';
+import {
+  deleteJiraAttachment,
+  listJiraIssueAttachments,
+  transitionJiraIssue,
+  updateJiraIssueFields,
+} from '../services/jiraService.js';
 
 const MAX_LIMIT = 200;
+const ARAMIDA_SQM_FIELDS = [
+  'customfield_13625',
+  'customfield_13626',
+  'customfield_13627',
+  'customfield_13631',
+  'customfield_13632',
+  'customfield_13633',
+];
 
 function parseLimitOffset(query) {
   const limit  = Math.min(Math.max(Number(query.limit)  || 50, 1), MAX_LIMIT);
@@ -157,6 +171,151 @@ export const listOsGenerationAudit = async (req, res) => {
     });
   } catch (error) {
     console.error('[Audit] listOsGenerationAudit error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+function isGeneratedOsPdf(attachment) {
+  const filename = String(attachment?.filename || '').trim();
+  const mimeType = String(attachment?.mimeType || '').toLowerCase();
+  return /^os-.*\.pdf$/i.test(filename) || (filename.toLowerCase().startsWith('os-') && mimeType === 'application/pdf');
+}
+
+function fieldsToClear(entry, projectById) {
+  const project = projectById.get(Number(entry.project_id));
+  const material = String(project?.material_type || '').toUpperCase();
+
+  if (material === 'TENSYLON' || String(entry.jiraKey || '').toUpperCase().startsWith('TENSYLON')) {
+    return process.env.JIRA_FIELD_SQM_TENSYLON ? [process.env.JIRA_FIELD_SQM_TENSYLON] : [];
+  }
+
+  return ARAMIDA_SQM_FIELDS;
+}
+
+// ─── POST /api/audit/os-generation/:id/rollback ─────────────────────────────
+//
+// Reverte os efeitos de Jira da geração de OS registrada no audit:
+//   - remove anexos PDF cujo nome comeca com "OS-"
+//   - limpa os custom fields de m2 preenchidos durante a geracao
+//   - devolve o card de "Liberado Engenharia" para "A Produzir"
+//
+export const rollbackOsGenerationAudit = async (req, res) => {
+  try {
+    const auditId = Number(req.params.id);
+    if (!Number.isFinite(auditId)) {
+      return res.status(400).json({ success: false, message: 'ID de auditoria invalido.' });
+    }
+
+    const { rows } = await pool.query(
+      `SELECT id, entries
+         FROM maestro.os_generation_audit
+        WHERE id = $1`,
+      [auditId]
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ success: false, message: 'Registro de auditoria nao encontrado.' });
+    }
+
+    const entries = Array.isArray(rows[0].entries) ? rows[0].entries : [];
+    const successEntries = entries.filter((entry) => entry?.status === 'success' && entry?.jiraKey);
+
+    if (successEntries.length === 0) {
+      return res.status(422).json({ success: false, message: 'Este registro nao possui OS gerada com sucesso para rollback.' });
+    }
+
+    const projectIds = [
+      ...new Set(successEntries.map((entry) => Number(entry.project_id)).filter(Number.isFinite)),
+    ];
+    const projectById = new Map();
+
+    if (projectIds.length) {
+      const projectRes = await pool.query(
+        `SELECT id, material_type
+           FROM maestro.project
+          WHERE id = ANY($1::int[])`,
+        [projectIds]
+      );
+      for (const project of projectRes.rows) {
+        projectById.set(Number(project.id), project);
+      }
+    }
+
+    const results = [];
+    for (const entry of successEntries) {
+      const result = {
+        jiraKey: entry.jiraKey,
+        os_number: entry.os_number || null,
+        deletedAttachments: [],
+        clearedFields: [],
+        statusTransition: null,
+        errors: [],
+      };
+
+      try {
+        const attachments = await listJiraIssueAttachments(req.user.id, entry.jiraKey);
+        const generatedPdfs = attachments.filter(isGeneratedOsPdf);
+
+        for (const attachment of generatedPdfs) {
+          try {
+            await deleteJiraAttachment(req.user.id, attachment.id);
+            result.deletedAttachments.push({ id: attachment.id, filename: attachment.filename });
+          } catch (error) {
+            result.errors.push(`Falha ao remover anexo ${attachment.filename || attachment.id}: ${error.message}`);
+          }
+        }
+      } catch (error) {
+        result.errors.push(`Falha ao listar anexos: ${error.message}`);
+      }
+
+      const fieldIds = fieldsToClear(entry, projectById);
+      if (fieldIds.length) {
+        try {
+          const clearPayload = Object.fromEntries(fieldIds.map((fieldId) => [fieldId, null]));
+          await updateJiraIssueFields(req.user.id, entry.jiraKey, clearPayload);
+          result.clearedFields = fieldIds;
+        } catch (error) {
+          const msg = error?.response?.data ? JSON.stringify(error.response.data) : error.message;
+          result.errors.push(`Falha ao limpar custom fields: ${msg}`);
+        }
+      }
+
+      try {
+        const tr = await transitionJiraIssue(req.user.id, entry.jiraKey, 'A Produzir', 'Liberado Engenharia');
+        result.statusTransition = tr;
+        if (!tr.changed && tr.reason === 'unexpected-source-status') {
+          result.errors.push(`Card nao movido: status atual "${tr.from}" (esperado: "Liberado Engenharia" ou "A Produzir")`);
+        }
+      } catch (error) {
+        const msg = error?.response?.data ? JSON.stringify(error.response.data) : error.message;
+        result.errors.push(`Falha ao devolver status para A Produzir: ${msg}`);
+      }
+
+      results.push(result);
+    }
+
+    const deletedAttachments = results.reduce((sum, item) => sum + item.deletedAttachments.length, 0);
+    const clearedFields = results.reduce((sum, item) => sum + item.clearedFields.length, 0);
+    const movedCards = results.filter((item) => item.statusTransition?.changed).length;
+    const errors = results.flatMap((item) => item.errors.map((message) => ({ jiraKey: item.jiraKey, message })));
+
+    return res.json({
+      success: errors.length === 0,
+      message: errors.length
+        ? 'Rollback concluido com avisos.'
+        : 'Rollback concluido.',
+      data: {
+        audit_id: auditId,
+        total_cards: results.length,
+        deleted_attachments: deletedAttachments,
+        cleared_fields: clearedFields,
+        moved_cards: movedCards,
+        errors,
+        results,
+      },
+    });
+  } catch (error) {
+    console.error('[Audit] rollbackOsGenerationAudit error:', error);
     return res.status(500).json({ success: false, message: error.message });
   }
 };
