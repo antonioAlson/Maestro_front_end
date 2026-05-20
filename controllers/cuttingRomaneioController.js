@@ -5,6 +5,15 @@ import { dirname } from 'path';
 import JSZip from 'jszip';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import pool from '../config/database.js';
+import {
+  attachToJiraIssue,
+  deleteJiraAttachment,
+  downloadJiraAttachment,
+  listJiraIssueAttachments,
+  transitionJiraIssue,
+} from '../services/jiraService.js';
+
+const ROMANEIO_TARGET_STATUS = 'A entregar';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -123,7 +132,7 @@ function wrapText(text, font, size, maxWidth) {
   return lines.length ? lines : [''];
 }
 
-async function findMantaCardByOs(osNumber) {
+async function findJiraCardByOs(osNumber, keyPrefix) {
   const os = normalizeOsNumber(osNumber);
 
   if (!os) {
@@ -138,11 +147,11 @@ async function findMantaCardByOs(osNumber) {
         veiculo,
         project
       FROM maestro.jira_cards
-      WHERE key ILIKE 'MANTA-%'
-        AND resumo ILIKE $1
+      WHERE key ILIKE $1
+        AND resumo ILIKE $2
       ORDER BY last_updated_at DESC NULLS LAST
     `,
-    [`%${os}%`],
+    [`${keyPrefix}-%`, `%${os}%`],
   );
 
   return rows.find(
@@ -150,13 +159,58 @@ async function findMantaCardByOs(osNumber) {
   ) || null;
 }
 
+async function findMantaCardByOs(osNumber) {
+  return findJiraCardByOs(osNumber, 'MANTA');
+}
+
+async function findTensylonCardByOs(osNumber) {
+  return findJiraCardByOs(osNumber, 'TENSYLON');
+}
+
+function isRomaneioAttachment(att, osNumber) {
+  const name = String(att?.filename || '').toLowerCase();
+  if (!name.endsWith('.pdf')) return false;
+  if (!name.startsWith('romaneio')) return false;
+  if (!osNumber) return true;
+  return name.includes(String(osNumber).toLowerCase());
+}
+
+function pickRomaneioAttachment(attachments, osNumber) {
+  const candidates = (attachments || []).filter((a) => isRomaneioAttachment(a, osNumber));
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => {
+    const da = a.created ? new Date(a.created).getTime() : 0;
+    const db = b.created ? new Date(b.created).getTime() : 0;
+    return db - da;
+  });
+  return candidates[0];
+}
+
+function filterObsoleteRomaneioAttachments(attachments, osNumber) {
+  return (attachments || []).filter((a) => isRomaneioAttachment(a, osNumber));
+}
+
+function pickBoardForItem(item) {
+  const material = sanitizeText(item.material).toUpperCase();
+  const kitType = sanitizeText(item.kitType).toUpperCase();
+
+  if (material.startsWith('TENSYLON') || kitType.includes('TENSYLON')) {
+    return 'TENSYLON';
+  }
+  if (material === 'ARAMIDA' || kitType === 'KIT_COMUM') {
+    return 'MANTA';
+  }
+  return null;
+}
+
 async function enrichItems(items) {
   const enriched = [];
 
   for (const item of items) {
     const osNumber = sanitizeText(item.os || item.orderNumber);
-
     const kitType = sanitizeText(item.kitType);
+    const material = sanitizeText(item.material);
+    const mode = sanitizeText(item.mode).toLowerCase() || 'overwrite';
 
     let description = sanitizeText(
       item.description || item.orderDescription,
@@ -166,8 +220,13 @@ async function enrichItems(items) {
     let jiraKey = '';
     let source = 'registro';
 
-    if (kitType.toUpperCase() === 'KIT_COMUM') {
-      const jira = await findMantaCardByOs(osNumber);
+    const board = pickBoardForItem({ kitType, material });
+
+    if (board) {
+      const jira =
+        board === 'TENSYLON'
+          ? await findTensylonCardByOs(osNumber)
+          : await findMantaCardByOs(osNumber);
 
       if (jira) {
         description = sanitizeText(
@@ -185,7 +244,10 @@ async function enrichItems(items) {
       description,
       project,
       kitType,
+      material,
       jiraKey,
+      board,
+      mode,
       source,
     });
   }
@@ -818,6 +880,8 @@ export const gerarRomaneioCorte = async (req, res) => {
         ),
 
         kitType: sanitizeText(item.kitType),
+        material: sanitizeText(item.material),
+        mode: sanitizeText(item.mode).toLowerCase() || 'overwrite',
       }))
       .filter((item) => item.os);
 
@@ -833,6 +897,7 @@ export const gerarRomaneioCorte = async (req, res) => {
     const failures = [];
     const printedEntries = [];
     const printedAt = new Date().toISOString();
+    const userId = req.user?.id || req.user?.userId || null;
 
     for (let index = 0; index < cleanItems.length; index += 1) {
       const sourceItem = cleanItems[index];
@@ -841,13 +906,81 @@ export const gerarRomaneioCorte = async (req, res) => {
         const [item] = await enrichItems([sourceItem]);
         const osNumber = normalizeOsNumber(item.osNumber);
         const fileName = `romaneio-${sanitizeFileName(osNumber || item.jiraKey || fallbackName)}.pdf`;
+        const reuseRequested = item.mode === 'reuse';
 
-        const pdf = await buildRomaneioPdf({
-          deliveryDate,
-          items: [item],
-        });
+        let pdfBuffer = null;
+        let pdfSource = 'generated';
+        let reusedAttachmentId = null;
 
-        zip.file(fileName, pdf);
+        if (reuseRequested && item.jiraKey && userId) {
+          try {
+            const attachments = await listJiraIssueAttachments(userId, item.jiraKey);
+            const candidate = pickRomaneioAttachment(attachments, osNumber);
+            if (candidate) {
+              pdfBuffer = await downloadJiraAttachment(userId, candidate.id);
+              pdfSource = 'reused';
+              reusedAttachmentId = candidate.id;
+            }
+          } catch (error) {
+            console.warn(
+              `[cuttingRomaneio] Falha ao baixar anexo existente para ${item.jiraKey}: ${error.message}`,
+            );
+          }
+        }
+
+        if (!pdfBuffer) {
+          pdfBuffer = await buildRomaneioPdf({
+            deliveryDate,
+            items: [item],
+          });
+        }
+
+        let attachmentAction = 'skipped';
+        let transitionResult = null;
+
+        if (item.jiraKey && userId && pdfSource !== 'reused') {
+          try {
+            const attachments = await listJiraIssueAttachments(userId, item.jiraKey);
+            const obsolete = filterObsoleteRomaneioAttachments(attachments, osNumber);
+            for (const att of obsolete) {
+              try {
+                await deleteJiraAttachment(userId, att.id);
+              } catch (error) {
+                console.warn(
+                  `[cuttingRomaneio] Falha ao remover anexo ${att.id} (${att.filename}) de ${item.jiraKey}: ${error.message}`,
+                );
+              }
+            }
+
+            await attachToJiraIssue(userId, item.jiraKey, fileName, pdfBuffer);
+            attachmentAction = obsolete.length > 0 ? 'replaced' : 'attached';
+          } catch (error) {
+            console.warn(
+              `[cuttingRomaneio] Falha ao anexar PDF em ${item.jiraKey}: ${error.message}`,
+            );
+            attachmentAction = `error:${error.message}`;
+          }
+        } else if (pdfSource === 'reused') {
+          attachmentAction = 'reused';
+        }
+
+        if (item.jiraKey && userId) {
+          try {
+            transitionResult = await transitionJiraIssue(
+              userId,
+              item.jiraKey,
+              ROMANEIO_TARGET_STATUS,
+              null,
+            );
+          } catch (error) {
+            console.warn(
+              `[cuttingRomaneio] Falha ao mover ${item.jiraKey} para "${ROMANEIO_TARGET_STATUS}": ${error.message}`,
+            );
+            transitionResult = { changed: false, reason: `error:${error.message}` };
+          }
+        }
+
+        zip.file(fileName, pdfBuffer);
 
         printedEntries.push({
           osNumber,
@@ -855,10 +988,17 @@ export const gerarRomaneioCorte = async (req, res) => {
           project: item.project || '',
           description: item.description || '',
           kitType: item.kitType || '',
+          material: item.material || '',
+          board: item.board || '',
           deliveryDate,
           printedAt,
           fileName,
-          userId: req.user?.id || req.user?.userId || null,
+          mode: item.mode,
+          pdfSource,
+          reusedAttachmentId,
+          attachmentAction,
+          transition: transitionResult,
+          userId,
           userName: req.user?.name || req.user?.username || req.user?.email || '',
         });
       } catch (error) {

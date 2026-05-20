@@ -249,7 +249,32 @@ export async function listJiraIssueAttachments(userId, issueKey) {
     filename: attachment.filename || '',
     mimeType: attachment.mimeType || '',
     size:     attachment.size || 0,
+    content:  attachment.content || '',
+    created:  attachment.created || '',
   }));
+}
+
+/**
+ * Download a Jira attachment's raw bytes by attachment ID.
+ * @param {number} userId
+ * @param {string|number} attachmentId
+ * @returns {Promise<Buffer>}
+ */
+export async function downloadJiraAttachment(userId, attachmentId) {
+  const jiraUrl = process.env.JIRA_URL;
+  if (!jiraUrl) throw new Error('JIRA_URL não configurado');
+
+  const { email, apiToken } = await getCredentials(userId);
+  const authHeader = `Basic ${Buffer.from(`${email}:${apiToken}`).toString('base64')}`;
+
+  const resp = await axios.get(`${jiraUrl}/rest/api/3/attachment/content/${attachmentId}`, {
+    headers: { Authorization: authHeader, Accept: 'application/octet-stream' },
+    responseType: 'arraybuffer',
+    timeout: 30_000,
+    maxRedirects: 5,
+  });
+
+  return Buffer.from(resp.data);
 }
 
 /**
@@ -335,7 +360,7 @@ export async function transitionJiraIssue(userId, issueKey, targetStatus, source
     return { changed: false, from: currentStatus, to: currentStatus, reason: 'already-in-target' };
   }
 
-  if (currentStatus.toLowerCase() !== sourceStatus.toLowerCase()) {
+  if (sourceStatus && currentStatus.toLowerCase() !== sourceStatus.toLowerCase()) {
     return { changed: false, from: currentStatus, to: currentStatus, reason: 'unexpected-source-status' };
   }
 
