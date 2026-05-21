@@ -6,7 +6,7 @@ import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import QRCode from 'qrcode';
 
 import JSZip from 'jszip';
-import { fetchJiraIssues, fetchAramidaIssues, fetchTensylonIssues, fetchPrevisaoMantaIssues, fetchPrevisaoTensylonIssues, attachToJiraIssue, updateJiraIssueFields, deleteJiraAttachment, fetchJiraFields, transitionJiraIssue } from '../services/jiraService.js';
+import { fetchJiraIssues, fetchAramidaIssues, fetchTensylonIssues, fetchPrevisaoMantaIssues, fetchPrevisaoTensylonIssues, fetchLiberadoEngenhariaIssues, attachToJiraIssue, updateJiraIssueFields, deleteJiraAttachment, fetchJiraFields, transitionJiraIssue } from '../services/jiraService.js';
 import { fetchAllProjects, fetchProjectsByIds, fetchDistinctDimensions } from '../services/mirrorProjectRepository.js';
 import pool from '../config/database.js';
 import { classifyAll } from '../services/classifierService.js';
@@ -66,6 +66,47 @@ export const getProjects = async (req, res) => {
     return res.json({ success: true, data: result });
   } catch (error) {
     console.error('[Mirrors] getProjects error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ─── GET /api/mirrors/projects/liberado-engenharia ─────────────────────────
+//
+// Mesma estrutura de /projects, mas alimentada apenas por cards Jira no
+// status "Liberado Engenharia" (MANTA + TENSYLON). Read-only — usado pela
+// tela de visualização. Reaproveita classifyAll e o filtro de busca.
+//
+export const getLiberadoEngenhariaProjects = async (req, res) => {
+  const { dimension = '1.60x3.00', material = 'aramida', search = '', factory = '' } = req.query;
+  const factoryFilter = String(factory).trim();
+  const effectiveFactory = material === 'tensylon' ? '' : factoryFilter;
+
+  try {
+    const [dbProjects, jiraCards] = await Promise.all([
+      fetchAllProjects(),
+      fetchLiberadoEngenhariaIssues(req.user.id, effectiveFactory || undefined).catch(err => {
+        console.warn('[Mirrors] Jira Liberado Engenharia indisponível:', err.message);
+        return [];
+      }),
+    ]);
+
+    const result = classifyAll(jiraCards, dbProjects, dimension, material);
+
+    if (search.trim()) {
+      const t = search.trim().toLowerCase();
+      const matches = item =>
+        [item.project, item.model, item.brand, item.osNumber,
+        item.numeroProjeto, item.veiculo, item.resumo]
+          .some(v => String(v || '').toLowerCase().includes(t));
+      result.ready = result.ready.filter(matches);
+      result.pending = result.pending.filter(matches);
+      result.missing = result.missing.filter(matches);
+      result.noDimension = result.noDimension.filter(matches);
+    }
+
+    return res.json({ success: true, data: result });
+  } catch (error) {
+    console.error('[Mirrors] getLiberadoEngenhariaProjects error:', error);
     return res.status(500).json({ success: false, message: error.message });
   }
 };

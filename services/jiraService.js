@@ -33,6 +33,18 @@ function buildAramidaJql(factory) {
 const JQL_TENSYLON =
   `project = TENSYLON AND status IN ("A Produzir", "🔴RECEBIDO NÃO LIBERADO")`;
 
+const LIBERADO_STATUS = `status = "Liberado Engenharia"`;
+
+function buildAramidaLiberadoJql(factory) {
+  const factoryClause = factory
+    ? `AND "fábrica de manta[dropdown]" = "${escapeJql(factory)}" `
+    : '';
+  return `project = MANTA ${factoryClause}AND ${LIBERADO_STATUS}`;
+}
+
+const JQL_TENSYLON_LIBERADO =
+  `project = TENSYLON AND ${LIBERADO_STATUS}`;
+
 const SITUACAO_FILTER =
   `("situação[short text]" ~ "🔴RECEBIDO NÃO LIBERADO" ` +
   `OR "situação[short text]" ~ "⚪️RECEBIDO ENCAMINHADO" ` +
@@ -143,6 +155,19 @@ async function fetchByJql(userId, jql, cacheKey) {
 export async function fetchJiraIssues(userId, factory) {
   const jql = `(${buildAramidaJql(factory)}) OR (${JQL_TENSYLON})`;
   const cacheKey = `${userId}:combined:${factory || 'all'}`;
+  return fetchByJql(userId, jql, cacheKey);
+}
+
+/**
+ * Fetch cards in "Liberado Engenharia" status from both MANTA (Aramida)
+ * and TENSYLON boards. Factory only narrows the MANTA side.
+ * @param {number} userId
+ * @param {string} [factory]
+ * @returns {Promise<JiraCard[]>}
+ */
+export async function fetchLiberadoEngenhariaIssues(userId, factory) {
+  const jql = `(${buildAramidaLiberadoJql(factory)}) OR (${JQL_TENSYLON_LIBERADO})`;
+  const cacheKey = `${userId}:liberado:${factory || 'all'}`;
   return fetchByJql(userId, jql, cacheKey);
 }
 
