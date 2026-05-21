@@ -672,6 +672,22 @@ export const getJiraFieldsList = async (req, res) => {
 };
 
 // ─── PDF helpers ─────────────────────────────────────────────────────────────
+
+// Resolve o texto do alerta de produto exibido na OS.
+// Regra fixa: projeto 311325 com modelo "Song Plus" deve usar o projeto Song
+// Premium — o alerta aparece automaticamente, sem depender de cadastro manual.
+// Fora dessa regra, usa o alerta cadastrado no projeto (product_alert).
+function resolveProductAlert(project) {
+  const code  = String(project?.project || '').toUpperCase();
+  const model = String(project?.model || '').toUpperCase();
+
+  if (code.includes('311325') && model.includes('SONG PLUS')) {
+    return 'Usar projeto Song Premium';
+  }
+
+  return String(project?.product_alert || '').trim();
+}
+
 export async function appendFirstPage(
   mergedPdf,
   project,
@@ -846,7 +862,7 @@ export async function appendFirstPage(
   });
 
   // ── Alerta de produto (à direita do título, vermelho, sem fundo) ───────────
-  const productAlert = String(project.product_alert || '').trim();
+  const productAlert = resolveProductAlert(project);
   if (productAlert) {
     const alertSize = 13;
     const alertW = fontBold.widthOfTextAtSize(productAlert, alertSize);
@@ -1332,7 +1348,7 @@ export async function appendLastPage(mergedPdf, project, meta) {
   });
 
   // ── Alerta de produto (à direita do título, vermelho, sem fundo) ───────────
-  const productAlertP2 = String(project.product_alert || '').trim();
+  const productAlertP2 = resolveProductAlert(project);
   if (productAlertP2) {
     const alertSize = 13;
     const alertW = fontBold.widthOfTextAtSize(productAlertP2, alertSize);
