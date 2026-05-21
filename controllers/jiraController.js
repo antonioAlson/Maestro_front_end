@@ -3965,3 +3965,129 @@ export const getPCPRelatorio = async (req, res) => {
     });
   }
 };
+
+export const getMantaRelatorio = async (req, res) => {
+  try {
+    console.log('🔍 Iniciando busca de issues para Relatório MANTA...');
+
+    let credentials;
+    try {
+      credentials = await getUserJiraCredentials(req.user.id);
+    } catch (credError) {
+      return res.status(400).json({
+        success: false,
+        message: `Erro ao buscar credenciais: ${credError.message}`
+      });
+    }
+
+    const { email, apiToken } = credentials;
+    const jiraUrl = process.env.JIRA_URL;
+
+    if (!jiraUrl) {
+      return res.status(500).json({
+        success: false,
+        message: 'JIRA_URL não configurado no servidor. Contate o administrador.'
+      });
+    }
+
+    if (!email || !apiToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'Credenciais do Jira não configuradas para seu usuário. Configure no perfil.'
+      });
+    }
+
+    const jql = 'project = MANTA';
+    const url = `${jiraUrl}/rest/api/3/search/jql`;
+    const auth = Buffer.from(`${email}:${apiToken}`).toString('base64');
+
+    console.log('🔍 [MANTA RELATORIO] JQL:', jql);
+
+    let allIssues = [];
+    let nextPageToken = null;
+    let pageCount = 0;
+
+    while (true) {
+      pageCount++;
+
+      const params = {
+        jql,
+        maxResults: 100,
+        fields: ['summary', 'status', 'customfield_10039'].join(',')
+      };
+
+      if (nextPageToken) {
+        params.nextPageToken = nextPageToken;
+      }
+
+      const response = await axios.get(url, {
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': `Basic ${auth}`
+        },
+        params
+      });
+
+      const issues = response.data.issues || [];
+      allIssues = [...allIssues, ...issues];
+
+      if (response.data.isLast) break;
+
+      nextPageToken = response.data.nextPageToken || null;
+      if (!nextPageToken) break;
+    }
+
+    console.log(`🎯 [MANTA RELATORIO] Total de issues coletadas: ${allIssues.length}`);
+
+    const processedData = allIssues.map((issue) => {
+      const fields = issue.fields;
+
+      let situacao = '';
+      const situacaoRaw = fields.customfield_10039;
+      if (situacaoRaw && typeof situacaoRaw === 'object' && situacaoRaw.value) {
+        situacao = situacaoRaw.value;
+      } else if (situacaoRaw) {
+        situacao = situacaoRaw;
+      }
+
+      const osMatches = String(fields.summary || '').match(/\b(\d{4,10})\b/g);
+      const os = osMatches ? osMatches[osMatches.length - 1] : '';
+
+      return {
+        key: issue.key,
+        os,
+        situacao,
+        status: fields.status?.name || ''
+      };
+    });
+
+    return res.json({
+      success: true,
+      total: allIssues.length,
+      data: processedData
+    });
+
+  } catch (error) {
+    console.error('❌ Erro ao buscar issues para Relatório MANTA:', error.message);
+
+    if (error.response) {
+      return res.status(error.response.status).json({
+        success: false,
+        message: `Erro na API do Jira (${error.response.status}): ${error.response.data?.errorMessages?.[0] || error.response.statusText}`,
+        details: error.response.data
+      });
+    }
+
+    if (error.request) {
+      return res.status(503).json({
+        success: false,
+        message: 'Não foi possível conectar ao Jira. Verifique a URL e a conexão de rede.'
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: 'Erro ao buscar dados do Jira: ' + error.message
+    });
+  }
+};

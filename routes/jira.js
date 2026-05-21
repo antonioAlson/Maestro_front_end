@@ -4,6 +4,7 @@ import {
   getJiraIssues,
   getContecIssues,
   getPCPRelatorio,
+  getMantaRelatorio,
   reprogramarEmMassa,
   atualizarDatasIndividuais,
   buscarArquivosPorIds,
@@ -36,6 +37,7 @@ const upload = multer({
 router.get('/issues',          authenticate, requirePermission('pcp_orders', 'read'),   getJiraIssues);
 router.get('/contec',          authenticate, requirePermission('pcp_orders', 'read'),   getContecIssues);
 router.get('/pcp-relatorio',   authenticate, requirePermission('pcp_reports', 'read'),  getPCPRelatorio);
+router.get('/manta-relatorio', authenticate, requirePermission('pcp_reports', 'read'),  getMantaRelatorio);
 router.post('/reprogramar-massa',          authenticate, requirePermission('pcp_orders', 'update'), reprogramarEmMassa);
 router.post('/atualizar-datas-individuais', authenticate, requirePermission('pcp_orders', 'update'), atualizarDatasIndividuais);
 router.post('/buscar-arquivos',            authenticate, requirePermission('pcp_orders', 'read'),   buscarArquivosPorIds);
