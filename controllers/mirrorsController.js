@@ -845,6 +845,20 @@ export async function appendFirstPage(
     color: rgb(0, 0, 0),
   });
 
+  // ── Alerta de produto (à direita do título, vermelho, sem fundo) ───────────
+  const productAlert = String(project.product_alert || '').trim();
+  if (productAlert) {
+    const alertSize = 13;
+    const alertW = fontBold.widthOfTextAtSize(productAlert, alertSize);
+    page.drawText(productAlert, {
+      x: width - marginLeft - alertW,
+      y: yPos + (titleSize - alertSize) / 2,
+      size: alertSize,
+      font: fontBold,
+      color: rgb(0.8, 0, 0),
+    });
+  }
+
   // ── Helper ────────────────────────────────────────────────────────────────
   const drawCentered = (
     text,
@@ -1316,6 +1330,20 @@ export async function appendLastPage(mergedPdf, project, meta) {
     size: matSize + 2,
     font: fontBold,
   });
+
+  // ── Alerta de produto (à direita do título, vermelho, sem fundo) ───────────
+  const productAlertP2 = String(project.product_alert || '').trim();
+  if (productAlertP2) {
+    const alertSize = 13;
+    const alertW = fontBold.widthOfTextAtSize(productAlertP2, alertSize);
+    page.drawText(productAlertP2, {
+      x: width - marginLeft - alertW,
+      y: y + ((matSize + 2) - alertSize) / 2,
+      size: alertSize,
+      font: fontBold,
+      color: rgb(0.8, 0, 0),
+    });
+  }
 
   y -= 60;
 

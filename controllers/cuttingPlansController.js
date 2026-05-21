@@ -7,7 +7,7 @@ const ALLOWED_ORDER_COLS = ['id', 'project', 'material_type', 'brand', 'model', 
 async function getProjectSnapshot(projectId) {
   const result = await pool.query(
     `SELECT p.id, p.project, p.material_type, p.brand, p.model,
-            p.roof_config, p.total_parts_qty, p.lid_parts_qty,
+            p.roof_config, p.total_parts_qty, p.lid_parts_qty, p.product_alert,
             COALESCE(
               json_agg(
                 json_build_object(
@@ -79,8 +79,8 @@ export const criarProjectComPlanos = async (req, res) => {
 
     const projectResult = await client.query(
       `INSERT INTO maestro.project
-         (project, material_type, brand, model, roof_config, total_parts_qty, lid_parts_qty)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+         (project, material_type, brand, model, roof_config, total_parts_qty, lid_parts_qty, product_alert)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING id`,
       [
         project,
@@ -91,7 +91,8 @@ export const criarProjectComPlanos = async (req, res) => {
         Math.trunc(totalPartsQty),
         Number.isFinite(Number(body.lid_parts_qty))
           ? Math.max(0, Math.trunc(Number(body.lid_parts_qty)))
-          : 0
+          : 0,
+        String(body.product_alert || '').trim()
       ]
     );
 
@@ -182,6 +183,7 @@ export const listarProjectsComPlanos = async (req, res) => {
             p.roof_config,
             p.total_parts_qty,
             p.lid_parts_qty,
+            p.product_alert,
             p.created_at,
             COALESCE(
               json_agg(
@@ -258,6 +260,7 @@ export const obterProjectComPlanos = async (req, res) => {
           p.roof_config,
           p.total_parts_qty,
           p.lid_parts_qty,
+          p.product_alert,
           p.created_at,
           COALESCE(
             json_agg(
@@ -443,8 +446,8 @@ export const clonarProjectComPlanos = async (req, res) => {
 
     const newProj = await client.query(
       `INSERT INTO maestro.project
-         (project, material_type, brand, model, roof_config, total_parts_qty, lid_parts_qty)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+         (project, material_type, brand, model, roof_config, total_parts_qty, lid_parts_qty, product_alert)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING id`,
       [
         `${orig.project} (cópia)`,
@@ -454,6 +457,7 @@ export const clonarProjectComPlanos = async (req, res) => {
         orig.roof_config || '',
         orig.total_parts_qty,
         orig.lid_parts_qty || 0,
+        orig.product_alert || '',
       ]
     );
     const newId = newProj.rows[0].id;
@@ -512,6 +516,7 @@ export const atualizarProjectFixo = async (req, res) => {
     if (body.brand !== undefined) fields.brand = String(body.brand).trim();
     if (body.model !== undefined) fields.model = String(body.model).trim();
     if (body.roof_config !== undefined) fields.roof_config = String(body.roof_config).trim();
+    if (body.product_alert !== undefined) fields.product_alert = String(body.product_alert).trim();
     if (body.total_parts_qty !== undefined) fields.total_parts_qty = Math.trunc(Number(body.total_parts_qty));
     if (body.lid_parts_qty !== undefined) fields.lid_parts_qty = Math.max(0, Math.trunc(Number(body.lid_parts_qty)));
 

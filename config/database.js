@@ -147,6 +147,11 @@ export async function ensureDatabaseCompatibility() {
     ADD COLUMN IF NOT EXISTS reviews JSONB NOT NULL DEFAULT '{"cutting": false, "labeling": false, "ki_Layout": false, "nesting_report": false, "folder_template": false}'::jsonb;
   `, 'maestro.project.reviews');
 
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.project
+    ADD COLUMN IF NOT EXISTS product_alert TEXT NOT NULL DEFAULT '';
+  `, 'maestro.project.product_alert');
+
   await ensureFileStorageTable();
   await ensureCuttingPlansTable();
   await ensureCuttingPlanAttachmentTable();

@@ -17,6 +17,7 @@ export async function fetchAllProjects() {
       p.roof_config,
       p.total_parts_qty,
       p.lid_parts_qty,
+      p.product_alert,
       p.created_at,
       COALESCE(
         json_agg(
@@ -79,6 +80,7 @@ export async function fetchProjectsByIds(ids) {
       p.roof_config,
       p.total_parts_qty,
       p.lid_parts_qty,
+      p.product_alert,
       COALESCE(
         json_agg(
           json_build_object(
