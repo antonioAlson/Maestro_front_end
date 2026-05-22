@@ -16,6 +16,16 @@ import { parseDimension, filterPlansByDimension } from '../utils/dimensionMatche
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// Mantemos apenas os dois primeiros segmentos (marca + modelo), descartando
+// o ano e quaisquer extras.
+function formatVeiculo(value) {
+  return String(value || '')
+    .split(' - ')
+    .slice(0, 2)
+    .join(' - ')
+    .trim();
+}
+
 // ─── GET /api/mirrors/projects ──────────────────────────────────────────────
 //
 // Query params:
@@ -484,7 +494,8 @@ async function processOsEntry(entry, proj, zip, req, fieldWarnings) {
     osNumber: String(entry.os_number || entry.osNumber || ''),
     // Modelo/veículo vem direto do Jira (campo "Veiculo - Marca/Modelo"),
     // pois um mesmo número de projeto pode atender modelos diferentes.
-    veiculo: String(entry.veiculo || '').trim(),
+    // Mantém só marca + modelo (dois primeiros segmentos), sem o ano.
+    veiculo: formatVeiculo(entry.veiculo),
   };
   const folderName = `OS-${meta.osNumber || entry.jiraKey}`;
   let phase = 'validação';
