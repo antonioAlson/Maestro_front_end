@@ -3,6 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
+import fontkit from '@pdf-lib/fontkit';
 import { query } from '../config/database.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -157,7 +158,10 @@ export const deleteCertificate = async (req, res) => {
 export const generateCertificatePdf = async (req, res) => {
   try {
     const { rows } = await query(
-      `SELECT * FROM maestro.quality_certificates WHERE id = $1`,
+      `SELECT c.*, u.name AS coordenador_nome
+       FROM maestro.quality_certificates c
+       LEFT JOIN maestro.users u ON u.id = c.created_by
+       WHERE c.id = $1`,
       [req.params.id]
     );
     if (!rows[0]) return res.status(404).json({ success: false, message: 'Certificado não encontrado' });
@@ -176,6 +180,7 @@ export const generateCertificatePdf = async (req, res) => {
 // ─── PDF builder ──────────────────────────────────────────────────────────────
 async function buildCertificatePdf(cert) {
   const doc = await PDFDocument.create();
+  doc.registerFontkit(fontkit);
 
   const page = doc.addPage([841.89, 595.28]); // A4 landscape
   const { width, height } = page.getSize();
@@ -188,14 +193,40 @@ async function buildCertificatePdf(cert) {
     StandardFonts.Helvetica
   );
 
+  const sacramentoPath = path.join(
+    __dirname,
+    '..',
+    'scripts',
+    'projetos',
+    'Sacramento-Regular.ttf'
+  );
+
+  let sacramentoFont = null;
+
+  if (fs.existsSync(sacramentoPath)) {
+    try {
+      const fontBytes =
+        await fs.promises.readFile(
+          sacramentoPath
+        );
+
+      sacramentoFont =
+        await doc.embedFont(fontBytes);
+
+    } catch (err) {
+      console.error(
+        'Erro fonte Sacramento:',
+        err
+      );
+    }
+  }
+
   // ──────────────────────────────────────────────────────────────────────────
   // COLORS
   // ──────────────────────────────────────────────────────────────────────────
 
   const dark = rgb(0.08, 0.08, 0.08);
   const gray = rgb(0.45, 0.45, 0.45);
-  const blue = rgb(0.06, 0.30, 0.58);
-  const lightGray = rgb(0.88, 0.88, 0.88);
 
   // ──────────────────────────────────────────────────────────────────────────
   // PATHS
@@ -222,13 +253,6 @@ async function buildCertificatePdf(cert) {
     'scripts',
     'projetos',
     '5anos.png'
-  );
-
-  const assinaturaLogoPath = path.join(
-    backendRoot,
-    'scripts',
-    'projetos',
-    'assinatura_cordenador.png'
   );
 
   const footerCandidates = [
@@ -460,33 +484,19 @@ async function buildCertificatePdf(cert) {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // DIVIDER
+  // TITLE
   // ──────────────────────────────────────────────────────────────────────────
 
-  const lineY =
+  const titleBaseY =
     Math.min(
       headerTop - operaLogoHeight,
       kevlarBottomY
-    ) - 18;
-
-  page.drawLine({
-    start: { x: ml, y: lineY },
-    end: {
-      x: width - ml,
-      y: lineY,
-    },
-    thickness: 1.2,
-    color: blue,
-  });
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // TITLE
-  // ──────────────────────────────────────────────────────────────────────────
+    ) - 25;
 
   const title =
     `CERTIFICADO DE QUALIDADE Nº ${cert.numero || ''}`;
 
-  const titleSize = 17;
+  const titleSize = 18;
 
   const titleW =
     fontBold.widthOfTextAtSize(
@@ -496,23 +506,21 @@ async function buildCertificatePdf(cert) {
 
   page.drawText(title, {
     x: (width - titleW) / 2,
-    y: lineY - 32,
+    y: titleBaseY,
     size: titleSize,
     font: fontBold,
     color: dark,
   });
 
   // ──────────────────────────────────────────────────────────────────────────
-  // FIELDS
+  // FIELDS (coluna única, alinhada à esquerda)
   // ──────────────────────────────────────────────────────────────────────────
 
-  const fieldY0 = lineY - 55;
+  const fieldY0 = titleBaseY - 32;
 
   const labelSize = 10;
 
-  const rowGap = 12;
-
-  const col2X = width / 2 + 20;
+  const rowGap = 13;
 
   const produtos = Array.isArray(
     cert.produtos
@@ -540,54 +548,55 @@ async function buildCertificatePdf(cert) {
       )
     : '';
 
-  const leftFields = [
+  const fields = [
     [
       'Certificado:',
       cert.certificado || '',
+      false,
     ],
 
     [
       'Painéis Balísticos:',
       cert.paineis_balisticos || '',
+      false,
     ],
 
     [
       'Produto Ópera:',
       produtoNomes,
+      false,
     ],
 
     [
       'Quantidade (m²):',
       produtoQtds,
+      false,
     ],
-  ];
 
-  const rightFields = [
     [
       'Nota Fiscal:',
       cert.nota_fiscal || '',
+      true,
     ],
 
     [
       'Veículo:',
       cert.veiculo || '',
+      true,
     ],
 
     [
       'Data de Emissão:',
       dataEmissao,
+      false,
     ],
   ];
 
+  const valueX = ml + 140;
+
   let lfY = fieldY0;
 
-  for (const [label, value] of leftFields) {
-    const lw =
-      fontBold.widthOfTextAtSize(
-        label,
-        labelSize
-      );
-
+  for (const [label, value, isBold] of fields) {
     page.drawText(label, {
       x: ml,
       y: lfY,
@@ -599,15 +608,15 @@ async function buildCertificatePdf(cert) {
     page.drawText(
       truncateText(
         String(value),
-        240,
-        font,
+        width - valueX - ml,
+        isBold ? fontBold : font,
         labelSize
       ),
       {
-        x: ml + lw + 6,
+        x: valueX,
         y: lfY,
         size: labelSize,
-        font,
+        font: isBold ? fontBold : font,
         color: dark,
       }
     );
@@ -615,60 +624,7 @@ async function buildCertificatePdf(cert) {
     lfY -= rowGap;
   }
 
-  let rfY = fieldY0;
-
-  for (const [label, value] of rightFields) {
-    const lw =
-      fontBold.widthOfTextAtSize(
-        label,
-        labelSize
-      );
-
-    page.drawText(label, {
-      x: col2X,
-      y: rfY,
-      size: labelSize,
-      font: fontBold,
-      color: dark,
-    });
-
-    page.drawText(
-      truncateText(
-        String(value),
-        220,
-        font,
-        labelSize
-      ),
-      {
-        x: col2X + lw + 6,
-        y: rfY,
-        size: labelSize,
-        font,
-        color: dark,
-      }
-    );
-
-    rfY -= rowGap;
-  }
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // CONTENT DIVIDER
-  // ──────────────────────────────────────────────────────────────────────────
-
-  let fy =
-    Math.min(lfY, rfY) - 10;
-
-  page.drawLine({
-    start: { x: ml, y: fy },
-    end: {
-      x: width - ml,
-      y: fy,
-    },
-    thickness: 0.5,
-    color: lightGray,
-  });
-
-  fy -= 22;
+  let fy = lfY - 18;
 
   // ──────────────────────────────────────────────────────────────────────────
   // BODY
@@ -720,27 +676,10 @@ async function buildCertificatePdf(cert) {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // RESERVA DE ESPAÇO
+  // GARANTIA IMAGE (centralizada, abaixo do corpo)
   // ──────────────────────────────────────────────────────────────────────────
 
-  const garantiaArea = 120;
-  const assinaturaArea = 80;
-  const footerArea = 90;
-
-  const minFy =
-    garantiaArea +
-    assinaturaArea +
-    footerArea;
-
-  if (fy < minFy) {
-    fy = minFy;
-  }
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // GARANTIA IMAGE
-  // ──────────────────────────────────────────────────────────────────────────
-
-  fy -= 20;
+  fy -= 10;
 
   if (
     fs.existsSync(garantiaLogoPath)
@@ -754,17 +693,14 @@ async function buildCertificatePdf(cert) {
       const garantiaDim =
         garantiaImg.scale(1);
 
-      const gW = 250;
+      const gW = 140;
 
       const gH =
         (garantiaDim.height /
           garantiaDim.width) *
         gW;
 
-      const garantiaY = Math.max(
-        fy - gH,
-        150
-      );
+      const garantiaY = fy - gH;
 
       page.drawImage(
         garantiaImg,
@@ -776,7 +712,7 @@ async function buildCertificatePdf(cert) {
         }
       );
 
-      fy = garantiaY - 12;
+      fy = garantiaY - 8;
 
     } catch (err) {
       console.error(
@@ -787,67 +723,55 @@ async function buildCertificatePdf(cert) {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // ASSINATURA IMAGE
+  // ASSINATURA CURSIVA (fonte Sacramento)
   // ──────────────────────────────────────────────────────────────────────────
 
+  const coordenadorNome =
+    cert.coordenador_nome ||
+    cert.coordenador ||
+    '';
+
   if (
-    fs.existsSync(
-      assinaturaLogoPath
-    )
+    sacramentoFont &&
+    coordenadorNome
   ) {
-    try {
-      const assinaturaImg =
-        await embedImage(
-          assinaturaLogoPath
-        );
+    // 45.5px ≈ 34pt
+    const signatureSize = 34;
 
-      const assinaturaDim =
-        assinaturaImg.scale(1);
-
-      const sigW = 220;
-
-      const sigH =
-        (assinaturaDim.height /
-          assinaturaDim.width) *
-        sigW;
-
-      const assinaturaY =
-        fy - sigH + 30;
-
-      page.drawImage(
-        assinaturaImg,
-        {
-          x: (width - sigW) / 2,
-          y: assinaturaY,
-          width: sigW,
-          height: sigH,
-        }
+    const signatureW =
+      sacramentoFont.widthOfTextAtSize(
+        coordenadorNome,
+        signatureSize
       );
 
-      fy = assinaturaY - 5;
+    const signatureBaselineY =
+      fy - signatureSize * 0.75;
 
-    } catch (err) {
-      console.error(
-        'Erro assinatura:',
-        err
-      );
-    }
+    page.drawText(coordenadorNome, {
+      x: (width - signatureW) / 2,
+      y: signatureBaselineY,
+      size: signatureSize,
+      font: sacramentoFont,
+      color: dark,
+    });
+
+    fy = signatureBaselineY - 2;
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // SIGNATURE LINE
+  // SIGNATURE LINE + TEXTO
   // ──────────────────────────────────────────────────────────────────────────
 
   const sigLineY = fy;
 
   page.drawLine({
     start: {
-      x: width / 2 - 80,
+      x: width / 2 - 110,
       y: sigLineY,
     },
 
     end: {
-      x: width / 2 + 80,
+      x: width / 2 + 110,
       y: sigLineY,
     },
 
@@ -858,18 +782,20 @@ async function buildCertificatePdf(cert) {
   const sigText =
     'Coordenador de Qualidade';
 
+  const sigTextSize = 10;
+
   page.drawText(sigText, {
     x:
       width / 2 -
       font.widthOfTextAtSize(
         sigText,
-        9
+        sigTextSize
       ) /
         2,
 
     y: sigLineY - 14,
 
-    size: 9,
+    size: sigTextSize,
 
     font,
 
@@ -877,7 +803,7 @@ async function buildCertificatePdf(cert) {
   });
 
   // ──────────────────────────────────────────────────────────────────────────
-  // FOOTER IMAGE
+  // FOOTER IMAGE (canto direito)
   // ──────────────────────────────────────────────────────────────────────────
 
   if (footerPath) {
@@ -890,7 +816,7 @@ async function buildCertificatePdf(cert) {
       const footerDim =
         footerImg.scale(1);
 
-      const footerW = 620;
+      const footerW = 220;
 
       const footerH =
         (footerDim.height /
@@ -900,9 +826,7 @@ async function buildCertificatePdf(cert) {
       page.drawImage(
         footerImg,
         {
-          x:
-            (width - footerW) /
-            2,
+          x: width - footerW,
 
           y: 0,
 
@@ -921,47 +845,22 @@ async function buildCertificatePdf(cert) {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // FOOTER TEXT
+  // FOOTER TEXT (alinhado à esquerda)
   // ──────────────────────────────────────────────────────────────────────────
 
-  const footerLineY = 38;
-
-  page.drawLine({
-    start: {
-      x: ml,
-      y: footerLineY,
-    },
-
-    end: {
-      x: width - ml,
-      y: footerLineY,
-    },
-
-    thickness: 0.5,
-
-    color: lightGray,
-  });
-
   const footerLines = [
-    'Ópera Armouring Materials',
+    'Ópera Amoring Materials',
 
-    'Avenida Tucunaré 421 - Tamboré - Barueri - SP - 06460-020',
+    'Avenida Tucunaré 421- Tamboré -Barueri – SP – 06460-020',
 
     'www.opera.security',
   ];
 
-  let footerY =
-    footerLineY - 10;
+  let footerY = 38;
 
   for (const line of footerLines) {
-    const lw =
-      font.widthOfTextAtSize(
-        line,
-        7
-      );
-
     page.drawText(line, {
-      x: (width - lw) / 2,
+      x: ml,
 
       y: footerY,
 
