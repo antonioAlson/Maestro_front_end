@@ -178,17 +178,42 @@ export async function ensureDatabaseCompatibility() {
 }
 
 // Catálogo de materiais (entidade referenciada por conformity_certificates).
-// Ex.: "Poliaramida", "UHMWPE", "Fibra de Vidro".
+// tipo segue a lista padrão da operação (VIDRO, AÇO, MANTA, TENSYLON, SUP.VIDRO);
+// espessura_mm é exigida apenas para AÇO e ignorada para os demais.
 async function ensureMaterialsTable() {
   await runCompatibilityQuery(`
     CREATE TABLE IF NOT EXISTS maestro.materials (
-      id          SERIAL PRIMARY KEY,
-      nome        TEXT NOT NULL UNIQUE,
-      ativo       BOOLEAN NOT NULL DEFAULT true,
-      created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at  TIMESTAMPTZ
+      id            SERIAL PRIMARY KEY,
+      nome          TEXT NOT NULL UNIQUE,
+      tipo          TEXT,
+      espessura_mm  NUMERIC(8,3),
+      ativo         BOOLEAN NOT NULL DEFAULT true,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at    TIMESTAMPTZ
     )
   `, 'maestro.materials');
+
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.materials
+    ADD COLUMN IF NOT EXISTS tipo TEXT
+  `, 'maestro.materials.tipo');
+
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.materials
+    ADD COLUMN IF NOT EXISTS espessura_mm NUMERIC(8,3)
+  `, 'maestro.materials.espessura_mm');
+
+  // espessura só pode estar preenchida quando o tipo for AÇO.
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.materials
+    DROP CONSTRAINT IF EXISTS materials_espessura_requires_aco
+  `, 'drop materials_espessura_requires_aco');
+
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.materials
+    ADD CONSTRAINT materials_espessura_requires_aco
+      CHECK (espessura_mm IS NULL OR tipo = 'AÇO')
+  `, 'add materials_espessura_requires_aco');
 }
 
 // Configuração global da produção — valores fixos usados na composição dos
