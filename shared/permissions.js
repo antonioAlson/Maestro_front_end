@@ -31,6 +31,7 @@ export const RESOURCES = {
 
   // Cadastros
   plate_suppliers: ['read', 'create', 'update', 'delete'],
+  gs1_calculator:  ['read'],
 
   // Auditoria
   audit_logs:   ['read', 'export'],
@@ -66,6 +67,7 @@ export const RESOURCE_LABELS = {
   invoicing_aging:     'Aging de Faturamento',
   invoicing_integrity: 'Integridade de Documentos',
   plate_suppliers:     'Fornecedores de Placa',
+  gs1_calculator:      'Calculadora GS1',
   audit_logs:          'Logs de Auditoria',
   cron_runs:           'Histórico de Cron',
   cron_jobs:           'Cron Jobs',
@@ -100,7 +102,7 @@ export const MODULES = [
   { id: 'pcp',         label: 'PCP',           resources: ['pcp_orders', 'pcp_acompanhamento', 'pcp_reports'] },
   { id: 'qualidade',   label: 'Qualidade',     resources: ['certificates'] },
   { id: 'faturamento', label: 'Faturamento',   resources: ['invoicing', 'invoicing_aging', 'invoicing_integrity'] },
-  { id: 'cadastros',   label: 'Cadastros',     resources: ['plate_suppliers'] },
+  { id: 'cadastros',   label: 'Cadastros',     resources: ['plate_suppliers', 'gs1_calculator'] },
   { id: 'auditoria',   label: 'Auditoria',     resources: ['audit_logs', 'cron_runs', 'cron_jobs', 'access_audit'] },
   { id: 'dashboard',   label: 'Dashboard',     resources: ['metrics'] },
   { id: 'admin',       label: 'Administração', resources: ['users', 'roles', 'user_access'] },
@@ -123,6 +125,7 @@ export const ROUTE_PERMISSIONS = {
   '/invoicing/aging':              { resource: 'invoicing_aging',     action: 'read'   },
   '/invoicing/integrity':          { resource: 'invoicing_integrity', action: 'read'   },
   '/cadastros/fornecedores-placa': { resource: 'plate_suppliers',     action: 'read'   },
+  '/cadastros/calculadora-gs1':    { resource: 'gs1_calculator',      action: 'read'   },
   '/audit':                        { resource: 'audit_logs',          action: 'read'   },
   '/audit/cron-runs':              { resource: 'cron_runs',           action: 'read'   },
   '/audit/cron-jobs-manage':       { resource: 'cron_jobs',           action: 'read'   },
@@ -173,6 +176,7 @@ export const PERMISSION_DESCRIPTIONS = {
   'plate_suppliers:create': 'Cadastrar fornecedores de placa',
   'plate_suppliers:update': 'Editar fornecedores de placa',
   'plate_suppliers:delete': 'Excluir fornecedores de placa',
+  'gs1_calculator:read':    'Acessar a calculadora GS1 (dígito verificador)',
   'audit_logs:read':   'Visualizar logs de auditoria do sistema',
   'audit_logs:export': 'Exportar logs de auditoria',
   'cron_runs:read':    'Visualizar histórico de execução de cron',
