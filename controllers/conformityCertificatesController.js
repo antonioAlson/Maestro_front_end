@@ -6,12 +6,26 @@ const SELECT_FIELDS = `
   c.nome_comercial,
   c.material_id,
   m.nome AS material_nome,
+  m.tipo AS material_tipo,
   c.quantidade_camadas,
+  c.espessura_mm,
+  c.descricao,
   c.ativo,
   c.created_by,
   c.created_at,
   c.updated_at
 `;
+
+function parseEspessura(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const n = Number(String(value).replace(',', '.'));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+async function loadMaterialTipo(materialId) {
+  const r = await pool.query('SELECT tipo FROM maestro.materials WHERE id = $1', [materialId]);
+  return r.rows[0]?.tipo ?? null;
+}
 
 // GET /api/conformity-certificates?onlyActive=true
 export const listarCertificados = async (req, res) => {
@@ -60,6 +74,8 @@ export const criarCertificado = async (req, res) => {
     const nome_comercial = String(req.body?.nome_comercial || '').trim();
     const material_id = Number(req.body?.material_id);
     const quantidade_camadas = Number(req.body?.quantidade_camadas);
+    const espessura_mm = parseEspessura(req.body?.espessura_mm);
+    const descricao = req.body?.descricao ? String(req.body.descricao).trim() : null;
 
     const missing = [];
     if (!numero) missing.push('numero');
@@ -75,12 +91,22 @@ export const criarCertificado = async (req, res) => {
       });
     }
 
+    if (espessura_mm !== null) {
+      const tipo = await loadMaterialTipo(material_id);
+      if (tipo !== 'AÇO') {
+        return res.status(400).json({
+          success: false,
+          message: 'Espessura só pode ser informada quando o material for AÇO.',
+        });
+      }
+    }
+
     const inserted = await pool.query(
       `INSERT INTO maestro.conformity_certificates
-         (numero, nome_comercial, material_id, quantidade_camadas, created_by)
-         VALUES ($1, $2, $3, $4, $5)
+         (numero, nome_comercial, material_id, quantidade_camadas, espessura_mm, descricao, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING id`,
-      [numero, nome_comercial, material_id, quantidade_camadas, req.user?.id || null]
+      [numero, nome_comercial, material_id, quantidade_camadas, espessura_mm, descricao, req.user?.id || null]
     );
 
     // Devolve a forma "fat" com nome do material já resolvido
@@ -113,6 +139,12 @@ export const atualizarCertificado = async (req, res) => {
     if (req.body?.nome_comercial !== undefined) fields.nome_comercial = String(req.body.nome_comercial).trim();
     if (req.body?.material_id !== undefined) fields.material_id = Number(req.body.material_id);
     if (req.body?.quantidade_camadas !== undefined) fields.quantidade_camadas = Number(req.body.quantidade_camadas);
+    if (req.body?.espessura_mm !== undefined) fields.espessura_mm = parseEspessura(req.body.espessura_mm);
+    if (req.body?.descricao !== undefined) {
+      fields.descricao = req.body.descricao === null || req.body.descricao === ''
+        ? null
+        : String(req.body.descricao).trim();
+    }
     if (req.body?.ativo !== undefined) fields.ativo = !!req.body.ativo;
 
     if (Object.keys(fields).length === 0) {
@@ -124,6 +156,34 @@ export const atualizarCertificado = async (req, res) => {
     if (fields.quantidade_camadas !== undefined &&
         (!Number.isFinite(fields.quantidade_camadas) || fields.quantidade_camadas <= 0)) {
       return res.status(400).json({ success: false, message: 'quantidade_camadas inválida.' });
+    }
+
+    // Se vai gravar espessura, garante que o material associado é AÇO.
+    if (fields.espessura_mm != null) {
+      let materialIdToCheck = fields.material_id;
+      if (!Number.isFinite(materialIdToCheck)) {
+        const r = await pool.query(
+          'SELECT material_id FROM maestro.conformity_certificates WHERE id = $1',
+          [id]
+        );
+        materialIdToCheck = r.rows[0]?.material_id;
+      }
+      if (materialIdToCheck) {
+        const tipo = await loadMaterialTipo(materialIdToCheck);
+        if (tipo !== 'AÇO') {
+          return res.status(400).json({
+            success: false,
+            message: 'Espessura só pode ser informada quando o material for AÇO.',
+          });
+        }
+      }
+    }
+
+    // Se trocou o material para um que não é AÇO e espessura não foi explicitamente
+    // setada, zera a espessura existente para manter consistência.
+    if (fields.material_id !== undefined && fields.espessura_mm === undefined) {
+      const tipo = await loadMaterialTipo(fields.material_id);
+      if (tipo !== 'AÇO') fields.espessura_mm = null;
     }
 
     const keys = Object.keys(fields);

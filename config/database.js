@@ -178,19 +178,16 @@ export async function ensureDatabaseCompatibility() {
 }
 
 // Catálogo de materiais (entidade referenciada por conformity_certificates).
-// tipo segue a lista padrão da operação (VIDRO, AÇO, MANTA, TENSYLON, SUP.VIDRO);
-// espessura_mm é exigida apenas para AÇO e ignorada para os demais.
+// tipo segue a lista padrão da operação (VIDRO, AÇO, MANTA, TENSYLON, SUP.VIDRO).
 async function ensureMaterialsTable() {
   await runCompatibilityQuery(`
     CREATE TABLE IF NOT EXISTS maestro.materials (
-      id            SERIAL PRIMARY KEY,
-      nome          TEXT NOT NULL UNIQUE,
-      tipo          TEXT,
-      espessura_mm  NUMERIC(8,3),
-      descricao     TEXT,
-      ativo         BOOLEAN NOT NULL DEFAULT true,
-      created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at    TIMESTAMPTZ
+      id          SERIAL PRIMARY KEY,
+      nome        TEXT NOT NULL UNIQUE,
+      tipo        TEXT,
+      ativo       BOOLEAN NOT NULL DEFAULT true,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at  TIMESTAMPTZ
     )
   `, 'maestro.materials');
 
@@ -199,17 +196,7 @@ async function ensureMaterialsTable() {
     ADD COLUMN IF NOT EXISTS tipo TEXT
   `, 'maestro.materials.tipo');
 
-  await runCompatibilityQuery(`
-    ALTER TABLE IF EXISTS maestro.materials
-    ADD COLUMN IF NOT EXISTS espessura_mm NUMERIC(8,3)
-  `, 'maestro.materials.espessura_mm');
-
-  await runCompatibilityQuery(`
-    ALTER TABLE IF EXISTS maestro.materials
-    ADD COLUMN IF NOT EXISTS descricao TEXT
-  `, 'maestro.materials.descricao');
-
-  // espessura só pode estar preenchida quando o tipo for AÇO.
+  // Limpeza: espessura e descricao foram realocadas para conformity_certificates.
   await runCompatibilityQuery(`
     ALTER TABLE IF EXISTS maestro.materials
     DROP CONSTRAINT IF EXISTS materials_espessura_requires_aco
@@ -217,9 +204,13 @@ async function ensureMaterialsTable() {
 
   await runCompatibilityQuery(`
     ALTER TABLE IF EXISTS maestro.materials
-    ADD CONSTRAINT materials_espessura_requires_aco
-      CHECK (espessura_mm IS NULL OR tipo = 'AÇO')
-  `, 'add materials_espessura_requires_aco');
+    DROP COLUMN IF EXISTS espessura_mm
+  `, 'drop maestro.materials.espessura_mm');
+
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.materials
+    DROP COLUMN IF EXISTS descricao
+  `, 'drop maestro.materials.descricao');
 }
 
 // Configuração global da produção — valores fixos usados na composição dos
@@ -256,12 +247,24 @@ async function ensureConformityCertificatesTable() {
       nome_comercial     TEXT NOT NULL,
       material_id        INTEGER NOT NULL REFERENCES maestro.materials(id),
       quantidade_camadas INTEGER NOT NULL CHECK (quantidade_camadas > 0),
+      espessura_mm       NUMERIC(8,3),
+      descricao          TEXT,
       ativo              BOOLEAN NOT NULL DEFAULT true,
       created_by         INTEGER REFERENCES maestro.users(id),
       created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
       updated_at         TIMESTAMPTZ
     )
   `, 'maestro.conformity_certificates');
+
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.conformity_certificates
+    ADD COLUMN IF NOT EXISTS espessura_mm NUMERIC(8,3)
+  `, 'maestro.conformity_certificates.espessura_mm');
+
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.conformity_certificates
+    ADD COLUMN IF NOT EXISTS descricao TEXT
+  `, 'maestro.conformity_certificates.descricao');
 
   await runCompatibilityQuery(`
     CREATE INDEX IF NOT EXISTS conformity_certificates_material_idx
