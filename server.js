@@ -16,6 +16,10 @@ import productionPacksRoutes from './routes/productionPacks.js';
 import cronRunsRoutes from './routes/cronRuns.js';
 import cronJobsRoutes from './routes/cronJobs.js';
 import cuttingRomaneioRoutes from './routes/cuttingRomaneio.js';
+import materialsRoutes from './routes/materials.js';
+import conformityCertificatesRoutes from './routes/conformityCertificates.js';
+import productionConfigRoutes from './routes/productionConfig.js';
+import rastreabilidadesRoutes from './routes/rastreabilidades.js';
 import { ensureDatabaseCompatibility } from './config/database.js';
 import { loadOpeVersions } from './cron_jobs/scheduler.js';
 import { migrateLegacyCronJobs } from './cron_jobs/migrateLegacyJobs.js';
@@ -87,6 +91,10 @@ app.use('/api/production-packs', productionPacksRoutes);
 app.use('/api/cron-runs',        cronRunsRoutes);
 app.use('/api/cron-jobs',        cronJobsRoutes);
 app.use('/api/cutting-romaneio', cuttingRomaneioRoutes);
+app.use('/api/materials',                materialsRoutes);
+app.use('/api/conformity-certificates',  conformityCertificatesRoutes);
+app.use('/api/production-config',        productionConfigRoutes);
+app.use('/api/rastreabilidades',         rastreabilidadesRoutes);
 
 // Rota 404
 app.use((req, res) => {
