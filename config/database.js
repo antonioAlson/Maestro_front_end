@@ -329,10 +329,22 @@ async function ensureConformityCertificatesTable() {
     ADD COLUMN IF NOT EXISTS descricao TEXT
   `, 'maestro.conformity_certificates.descricao');
 
+  // Vínculo com fornecedor de placa — chave usada pelo auto-fill do Cert. de
+  // Qualidade junto com quantidade_camadas para escolher o cert. aplicável.
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.conformity_certificates
+    ADD COLUMN IF NOT EXISTS plate_supplier_id INTEGER REFERENCES maestro.plate_supplier(id)
+  `, 'maestro.conformity_certificates.plate_supplier_id');
+
   await runCompatibilityQuery(`
     CREATE INDEX IF NOT EXISTS conformity_certificates_material_idx
       ON maestro.conformity_certificates (material_id)
   `, 'conformity_certificates_material_idx');
+
+  await runCompatibilityQuery(`
+    CREATE INDEX IF NOT EXISTS conformity_certificates_lookup_idx
+      ON maestro.conformity_certificates (plate_supplier_id, quantidade_camadas)
+  `, 'conformity_certificates_lookup_idx');
 }
 
 // Rastreabilidade + IIS na mesma linha (1:1, IIS é totalmente derivado).
