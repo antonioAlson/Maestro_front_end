@@ -173,8 +173,29 @@ export async function ensureDatabaseCompatibility() {
   await ensureOsGeneratedMeasureTable();
   await ensureMaterialsTable();
   await ensureProductionConfigTable();
+  await ensureAppPreferencesTable();
   await ensureConformityCertificatesTable();
   await ensureRastreabilidadesTable();
+}
+
+// Preferências globais da aplicação (flags de comportamento de páginas).
+// Diferente de production_config (constantes de TR/IIS): aqui ficam toggles
+// que admins ligam/desligam para alterar o comportamento de telas.
+async function ensureAppPreferencesTable() {
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS maestro.app_preferences (
+      key         TEXT PRIMARY KEY,
+      value       TEXT NOT NULL,
+      description TEXT,
+      updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `, 'maestro.app_preferences');
+
+  await runCompatibilityQuery(`
+    INSERT INTO maestro.app_preferences (key, value, description) VALUES
+      ('corte_romaneio_opera_enabled', '0', 'Permite gerar romaneio para registros de corte cujo único fornecedor é OPERA (0 = desabilitado, 1 = habilitado)')
+    ON CONFLICT (key) DO NOTHING
+  `, 'app_preferences seed');
 }
 
 // Catálogo de materiais (entidade referenciada por conformity_certificates).

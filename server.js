@@ -19,6 +19,7 @@ import cuttingRomaneioRoutes from './routes/cuttingRomaneio.js';
 import materialsRoutes from './routes/materials.js';
 import conformityCertificatesRoutes from './routes/conformityCertificates.js';
 import productionConfigRoutes from './routes/productionConfig.js';
+import appPreferencesRoutes from './routes/appPreferences.js';
 import rastreabilidadesRoutes from './routes/rastreabilidades.js';
 import { ensureDatabaseCompatibility } from './config/database.js';
 import { loadOpeVersions } from './cron_jobs/scheduler.js';
@@ -94,6 +95,7 @@ app.use('/api/cutting-romaneio', cuttingRomaneioRoutes);
 app.use('/api/materials',                materialsRoutes);
 app.use('/api/conformity-certificates',  conformityCertificatesRoutes);
 app.use('/api/production-config',        productionConfigRoutes);
+app.use('/api/app-preferences',          appPreferencesRoutes);
 app.use('/api/rastreabilidades',         rastreabilidadesRoutes);
 
 // Rota 404

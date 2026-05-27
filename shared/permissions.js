@@ -51,6 +51,11 @@ export const RESOURCES = {
   users:       ['read', 'create', 'update', 'delete'],
   roles:       ['read', 'create', 'update', 'delete'],
   user_access: ['manage'],
+
+  // Preferências globais da aplicação (flags de comportamento de páginas).
+  // Leitura é liberada para qualquer autenticado pelo próprio endpoint; o
+  // gate aqui controla apenas quem pode editar.
+  app_preferences: ['update'],
 };
 
 // Flat array of { resource, action } — seeded into maestro.permissions.
@@ -84,6 +89,7 @@ export const RESOURCE_LABELS = {
   users:               'Usuários',
   roles:               'Roles',
   user_access:         'Acessos de Usuários',
+  app_preferences:     'Preferências da Aplicação',
 };
 
 // Human-readable labels for actions — used in the permissions tree UI.
@@ -114,7 +120,7 @@ export const MODULES = [
   { id: 'cadastros',   label: 'Cadastros',     resources: ['plate_suppliers', 'materials', 'conformity_certificates'] },
   { id: 'auditoria',   label: 'Auditoria',     resources: ['audit_logs', 'cron_runs', 'cron_jobs', 'access_audit'] },
   { id: 'dashboard',   label: 'Dashboard',     resources: ['metrics'] },
-  { id: 'admin',       label: 'Administração', resources: ['users', 'roles', 'user_access'] },
+  { id: 'admin',       label: 'Administração', resources: ['users', 'roles', 'user_access', 'app_preferences'] },
 ];
 
 // Frontend route → minimum permission to enter that page.
@@ -143,6 +149,7 @@ export const ROUTE_PERMISSIONS = {
   '/audit/cron-jobs-manage':       { resource: 'cron_jobs',           action: 'read'   },
   '/users':                        { resource: 'users',               action: 'read'   },
   '/users/acesso':                 { resource: 'user_access',         action: 'manage' },
+  '/admin/preferencias':           { resource: 'app_preferences',     action: 'update' },
   '/settings':                     null,
 };
 
@@ -222,4 +229,5 @@ export const PERMISSION_DESCRIPTIONS = {
   'roles:update':  'Editar permissões de roles existentes',
   'roles:delete':  'Excluir roles customizadas',
   'user_access:manage': 'Atribuir/revogar roles e gerenciar acessos de usuários',
+  'app_preferences:update': 'Editar preferências globais da aplicação (flags de comportamento das telas)',
 };
