@@ -160,6 +160,7 @@ export async function ensureDatabaseCompatibility() {
   await ensureJiraCardsProducedAt();
   await ensurePlateSupplierTable();
   await ensurePlateSizeTable();
+  await ensureFabricSupplierTable();
   await ensureOsPlanningTable();
   await ensureOsPrintAuditTable();
   await ensureProductionPackTable();
@@ -557,6 +558,18 @@ async function ensurePlateSupplierTable() {
       updated_at  TIMESTAMPTZ
     )
   `, 'maestro.plate_supplier');
+}
+
+async function ensureFabricSupplierTable() {
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS maestro.fabric_supplier (
+      id          SERIAL PRIMARY KEY,
+      name        TEXT NOT NULL UNIQUE,
+      active      BOOLEAN NOT NULL DEFAULT true,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at  TIMESTAMPTZ
+    )
+  `, 'maestro.fabric_supplier');
 }
 
 async function ensurePlateSizeTable() {

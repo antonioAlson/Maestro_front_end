@@ -36,7 +36,8 @@ export const RESOURCES = {
   invoicing_integrity: ['read'],
 
   // Cadastros
-  plate_suppliers: ['read', 'create', 'update', 'delete'],
+  plate_suppliers:  ['read', 'create', 'update', 'delete'],
+  fabric_suppliers: ['read', 'create', 'update', 'delete'],
 
   // Auditoria
   audit_logs:   ['read', 'export'],
@@ -81,6 +82,7 @@ export const RESOURCE_LABELS = {
   invoicing_aging:     'Aging de Faturamento',
   invoicing_integrity: 'Integridade de Documentos',
   plate_suppliers:     'Fornecedores de Placa',
+  fabric_suppliers:    'Fornecedores de Tecido',
   audit_logs:          'Logs de Auditoria',
   cron_runs:           'Histórico de Cron',
   cron_jobs:           'Cron Jobs',
@@ -117,7 +119,7 @@ export const MODULES = [
   { id: 'producao',    label: 'Produção',      resources: ['rastreabilidades', 'production_config'] },
   { id: 'qualidade',   label: 'Qualidade',     resources: ['certificates'] },
   { id: 'faturamento', label: 'Faturamento',   resources: ['invoicing', 'invoicing_aging', 'invoicing_integrity'] },
-  { id: 'cadastros',   label: 'Cadastros',     resources: ['plate_suppliers', 'materials', 'conformity_certificates'] },
+  { id: 'cadastros',   label: 'Cadastros',     resources: ['plate_suppliers', 'fabric_suppliers', 'materials', 'conformity_certificates'] },
   { id: 'auditoria',   label: 'Auditoria',     resources: ['audit_logs', 'cron_runs', 'cron_jobs', 'access_audit'] },
   { id: 'dashboard',   label: 'Dashboard',     resources: ['metrics'] },
   { id: 'admin',       label: 'Administração', resources: ['users', 'roles', 'user_access', 'app_preferences'] },
@@ -140,6 +142,7 @@ export const ROUTE_PERMISSIONS = {
   '/invoicing/aging':              { resource: 'invoicing_aging',     action: 'read'   },
   '/invoicing/integrity':          { resource: 'invoicing_integrity', action: 'read'   },
   '/cadastros/fornecedores-placa':         { resource: 'plate_suppliers',         action: 'read' },
+  '/cadastros/fornecedores-tecido':        { resource: 'fabric_suppliers',        action: 'read' },
   '/cadastros/materiais':                  { resource: 'materials',               action: 'read' },
   '/cadastros/certificados-conformidade':  { resource: 'conformity_certificates', action: 'read' },
   '/producao/rastreabilidade':             { resource: 'rastreabilidades',        action: 'read' },
@@ -195,6 +198,10 @@ export const PERMISSION_DESCRIPTIONS = {
   'plate_suppliers:create': 'Cadastrar fornecedores de placa',
   'plate_suppliers:update': 'Editar fornecedores de placa',
   'plate_suppliers:delete': 'Excluir fornecedores de placa',
+  'fabric_suppliers:read':   'Visualizar fornecedores de tecido',
+  'fabric_suppliers:create': 'Cadastrar fornecedores de tecido',
+  'fabric_suppliers:update': 'Editar fornecedores de tecido',
+  'fabric_suppliers:delete': 'Excluir fornecedores de tecido',
   'materials:read':   'Visualizar materiais',
   'materials:create': 'Cadastrar materiais',
   'materials:update': 'Editar materiais',
