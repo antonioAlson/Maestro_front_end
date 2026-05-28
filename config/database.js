@@ -164,6 +164,7 @@ export async function ensureDatabaseCompatibility() {
   await ensurePanelReservationTable();
   await ensurePanelConsumptionTable();
   await ensureJiraNfAttachmentTable();
+  await ensureFabricSupplierTable();
   await ensureOsPlanningTable();
   await ensureOsPrintAuditTable();
   await ensureProductionPackTable();
@@ -175,7 +176,12 @@ export async function ensureDatabaseCompatibility() {
   await ensureUserProfileColumns();
   await ensureRbacTables();
   await ensureOsGeneratedMeasureTable();
+  await ensureMaterialsTable();
+  await ensureMaterialMeasureTypesTable();
+  await ensureProductionConfigTable();
   await ensureAppPreferencesTable();
+  await ensureConformityCertificatesTable();
+  await ensureRastreabilidadesTable();
 }
 
 // Preferências globais da aplicação (flags de comportamento de páginas).
@@ -196,6 +202,198 @@ async function ensureAppPreferencesTable() {
       ('corte_romaneio_opera_enabled', '0', 'Permite gerar romaneio para registros de corte cujo único fornecedor é OPERA (0 = desabilitado, 1 = habilitado)')
     ON CONFLICT (key) DO NOTHING
   `, 'app_preferences seed');
+}
+
+// Catálogo de materiais (entidade referenciada por conformity_certificates).
+// tipo segue a lista padrão da operação (VIDRO, AÇO, MANTA, TENSYLON, SUP.VIDRO).
+async function ensureMaterialsTable() {
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS maestro.materials (
+      id          SERIAL PRIMARY KEY,
+      nome        TEXT NOT NULL UNIQUE,
+      tipo        TEXT,
+      ativo       BOOLEAN NOT NULL DEFAULT true,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at  TIMESTAMPTZ
+    )
+  `, 'maestro.materials');
+
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.materials
+    ADD COLUMN IF NOT EXISTS tipo TEXT
+  `, 'maestro.materials.tipo');
+
+  // Limpeza: espessura e descricao foram realocadas para conformity_certificates.
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.materials
+    DROP CONSTRAINT IF EXISTS materials_espessura_requires_aco
+  `, 'drop materials_espessura_requires_aco');
+
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.materials
+    DROP COLUMN IF EXISTS espessura_mm
+  `, 'drop maestro.materials.espessura_mm');
+
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.materials
+    DROP COLUMN IF EXISTS descricao
+  `, 'drop maestro.materials.descricao');
+}
+
+// Configuração global da produção — valores fixos usados na composição dos
+// códigos de Rastreabilidade e IIS (TR, tipo de embalagem, país, CEP).
+// Key/value para permitir alteração via UI sem migração de schema.
+async function ensureMaterialMeasureTypesTable() {
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS maestro.material_measure_types (
+      id          SERIAL PRIMARY KEY,
+      nome        TEXT NOT NULL UNIQUE,
+      unidade     TEXT,
+      ativo       BOOLEAN NOT NULL DEFAULT true,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at  TIMESTAMPTZ
+    )
+  `, 'maestro.material_measure_types');
+
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS maestro.material_measure_type_map (
+      material_id     INTEGER NOT NULL REFERENCES maestro.materials(id) ON DELETE CASCADE,
+      measure_type_id INTEGER NOT NULL REFERENCES maestro.material_measure_types(id) ON DELETE CASCADE,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (material_id, measure_type_id)
+    )
+  `, 'maestro.material_measure_type_map');
+
+  await runCompatibilityQuery(`
+    INSERT INTO maestro.material_measure_types (nome, unidade) VALUES
+      ('Espessura', 'mm'),
+      ('Camadas', NULL)
+    ON CONFLICT (nome) DO NOTHING
+  `, 'material_measure_types seed');
+}
+
+async function ensureProductionConfigTable() {
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS maestro.production_config (
+      key         TEXT PRIMARY KEY,
+      value       TEXT NOT NULL,
+      description TEXT,
+      updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `, 'maestro.production_config');
+
+  // Seed inicial — só insere se a chave não existir.
+  await runCompatibilityQuery(`
+    INSERT INTO maestro.production_config (key, value, description) VALUES
+      ('tr_numero',          '0430',  'Número do TR (4 dígitos) usado em Rastreabilidade e IIS'),
+      ('iis_tipo_embalagem', '6',     'Tipo de embalagem do IIS (1 dígito)'),
+      ('iis_pais',           '789',   'Código do país no IIS (3 dígitos)'),
+      ('iis_cep',            '06460', 'CEP no IIS (5 dígitos)')
+    ON CONFLICT (key) DO NOTHING
+  `, 'production_config seed');
+}
+
+// Certificado de Conformidade RETEX — emitido para o produto, vincula
+// material e quantidade de camadas. Referenciado pelas rastreabilidades.
+async function ensureConformityCertificatesTable() {
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS maestro.conformity_certificates (
+      id                 SERIAL PRIMARY KEY,
+      numero             TEXT NOT NULL UNIQUE,
+      nome_comercial     TEXT NOT NULL,
+      material_id        INTEGER NOT NULL REFERENCES maestro.materials(id),
+      quantidade_camadas INTEGER CHECK (quantidade_camadas > 0),
+      espessura_mm       NUMERIC(8,3),
+      medidas            JSONB NOT NULL DEFAULT '{}'::jsonb,
+      descricao          TEXT,
+      ativo              BOOLEAN NOT NULL DEFAULT true,
+      created_by         INTEGER REFERENCES maestro.users(id),
+      created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at         TIMESTAMPTZ
+    )
+  `, 'maestro.conformity_certificates');
+
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.conformity_certificates
+    ADD COLUMN IF NOT EXISTS espessura_mm NUMERIC(8,3)
+  `, 'maestro.conformity_certificates.espessura_mm');
+
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.conformity_certificates
+    ADD COLUMN IF NOT EXISTS medidas JSONB NOT NULL DEFAULT '{}'::jsonb
+  `, 'maestro.conformity_certificates.medidas');
+
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.conformity_certificates
+    ALTER COLUMN quantidade_camadas DROP NOT NULL
+  `, 'maestro.conformity_certificates.quantidade_camadas nullable');
+
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.conformity_certificates
+    ADD COLUMN IF NOT EXISTS descricao TEXT
+  `, 'maestro.conformity_certificates.descricao');
+
+  // Vínculo com fornecedor de placa — chave usada pelo auto-fill do Cert. de
+  // Qualidade junto com quantidade_camadas para escolher o cert. aplicável.
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.conformity_certificates
+    ADD COLUMN IF NOT EXISTS plate_supplier_id INTEGER REFERENCES maestro.plate_supplier(id)
+  `, 'maestro.conformity_certificates.plate_supplier_id');
+
+  await runCompatibilityQuery(`
+    CREATE INDEX IF NOT EXISTS conformity_certificates_material_idx
+      ON maestro.conformity_certificates (material_id)
+  `, 'conformity_certificates_material_idx');
+
+  await runCompatibilityQuery(`
+    CREATE INDEX IF NOT EXISTS conformity_certificates_lookup_idx
+      ON maestro.conformity_certificates (plate_supplier_id, quantidade_camadas)
+  `, 'conformity_certificates_lookup_idx');
+}
+
+// Rastreabilidade + IIS na mesma linha (1:1, IIS é totalmente derivado).
+// codigo_rastreabilidade (13 dig) e codigo_iis (24 dig) são GENERATED.
+// Os campos iis_* guardam snapshot dos fixos no momento da emissão para
+// que mudanças futuras na production_config não afetem registros antigos.
+async function ensureRastreabilidadesTable() {
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS maestro.rastreabilidades (
+      id                     SERIAL PRIMARY KEY,
+      certificate_id         INTEGER NOT NULL REFERENCES maestro.conformity_certificates(id),
+      tipo_material          CHAR(1) NOT NULL CHECK (tipo_material IN ('M','V')),
+      tr                     VARCHAR(4) NOT NULL CHECK (tr ~ '^[0-9]{4}$'),
+      mes                    VARCHAR(2) NOT NULL CHECK (mes ~ '^(0[1-9]|1[0-2])$'),
+      ano                    VARCHAR(2) NOT NULL CHECK (ano ~ '^[0-9]{2}$'),
+      sequencial             VARCHAR(6) NOT NULL CHECK (sequencial ~ '^[0-9]{6}$'),
+      iis_tipo_embalagem     VARCHAR(1) NOT NULL CHECK (iis_tipo_embalagem ~ '^[0-9]$'),
+      iis_pais               VARCHAR(3) NOT NULL CHECK (iis_pais ~ '^[0-9]{3}$'),
+      iis_cep                VARCHAR(5) NOT NULL CHECK (iis_cep ~ '^[0-9]{5}$'),
+      iis_dv                 VARCHAR(1) NOT NULL CHECK (iis_dv ~ '^[0-9]$'),
+      codigo_rastreabilidade VARCHAR(13) GENERATED ALWAYS AS
+        (tipo_material || tr || mes || ano || sequencial) STORED,
+      codigo_iis             VARCHAR(24) GENERATED ALWAYS AS
+        (iis_tipo_embalagem || iis_pais || tr || iis_cep || mes || ano || sequencial || iis_dv) STORED,
+      created_by             INTEGER REFERENCES maestro.users(id),
+      created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at             TIMESTAMPTZ,
+      CONSTRAINT rastreabilidades_unique UNIQUE (tipo_material, tr, mes, ano, sequencial)
+    )
+  `, 'maestro.rastreabilidades');
+
+  await runCompatibilityQuery(`
+    CREATE INDEX IF NOT EXISTS rastreabilidades_cert_idx
+      ON maestro.rastreabilidades (certificate_id)
+  `, 'rastreabilidades_cert_idx');
+
+  await runCompatibilityQuery(`
+    CREATE INDEX IF NOT EXISTS rastreabilidades_codigo_idx
+      ON maestro.rastreabilidades (codigo_rastreabilidade)
+  `, 'rastreabilidades_codigo_idx');
+
+  await runCompatibilityQuery(`
+    CREATE INDEX IF NOT EXISTS rastreabilidades_iis_codigo_idx
+      ON maestro.rastreabilidades (codigo_iis)
+  `, 'rastreabilidades_iis_codigo_idx');
 }
 
 // Cargos (funções) catalogados — referenciados por users.cargo_id.
@@ -376,6 +574,18 @@ async function ensurePlateSupplierTable() {
       updated_at  TIMESTAMPTZ
     )
   `, 'maestro.plate_supplier');
+}
+
+async function ensureFabricSupplierTable() {
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS maestro.fabric_supplier (
+      id          SERIAL PRIMARY KEY,
+      name        TEXT NOT NULL UNIQUE,
+      active      BOOLEAN NOT NULL DEFAULT true,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at  TIMESTAMPTZ
+    )
+  `, 'maestro.fabric_supplier');
 }
 
 async function ensurePlateSizeTable() {
@@ -893,6 +1103,13 @@ async function ensureQualityCertificatesTable() {
     CREATE INDEX IF NOT EXISTS quality_certificates_numero_idx
       ON maestro.quality_certificates (numero)
   `, 'quality_certificates_numero_idx');
+
+  // Fornecedor de tecido — snapshot string. Vem do enfesto (workorder do
+  // Carbon) e fica registrado aqui para histórico do cert. emitido.
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.quality_certificates
+    ADD COLUMN IF NOT EXISTS fornecedor_tecido TEXT
+  `, 'maestro.quality_certificates.fornecedor_tecido');
 }
 
 async function ensureAuditTables() {
