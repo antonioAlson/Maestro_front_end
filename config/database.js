@@ -56,6 +56,14 @@ async function runCompatibilityQuery(sql, label) {
     if (error?.code === '42P07') {
       return;
     }
+    // 42P01 = undefined_table. Pode acontecer em DDL dependente quando uma
+    // criação anterior foi ignorada por falta de permissão (42501), como índice
+    // ou FK sobre tabelas public.* compartilhadas com o Spring. Não derruba o
+    // bootstrap; o endpoint real ainda falhará se a tabela necessária não existir.
+    if (error?.code === '42P01') {
+      console.warn(`⚠️ Objeto dependente ausente para ajuste automático: ${label}`);
+      return;
+    }
 
     throw error;
   }
@@ -70,9 +78,17 @@ async function ensureFileStorageTable() {
       path          text,
       mime_type     text,
       size          bigint,
+      sha256_hash   varchar(64),
       created_at    timestamp DEFAULT now()
     )
   `, 'maestro.file_storage');
+
+  // Compat: ambientes antigos podem não ter sha256_hash. Os arquivos legados
+  // ficam com NULL e podem ser revalidados sob demanda (recomputar do disco).
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.file_storage
+    ADD COLUMN IF NOT EXISTS sha256_hash varchar(64)
+  `, 'maestro.file_storage.sha256_hash');
 }
 
 async function ensureCuttingPlanAttachmentTable() {
@@ -165,6 +181,8 @@ export async function ensureDatabaseCompatibility() {
   await ensurePanelConsumptionTable();
   await ensureJiraNfAttachmentTable();
   await ensureFabricSupplierTable();
+  await ensureWorkorderSharedTables();
+  await ensureCarbonSharedTables();
   await ensureOsPlanningTable();
   await ensureOsPrintAuditTable();
   await ensureProductionPackTable();
@@ -333,21 +351,53 @@ async function ensureConformityCertificatesTable() {
     ADD COLUMN IF NOT EXISTS descricao TEXT
   `, 'maestro.conformity_certificates.descricao');
 
-  // Vínculo com fornecedor de placa — chave usada pelo auto-fill do Cert. de
-  // Qualidade junto com quantidade_camadas para escolher o cert. aplicável.
+  // Vínculo com fornecedor de material balístico — chave usada pelo auto-fill
+  // do Cert. de Qualidade junto com quantidade_camadas para escolher o cert.
+  // aplicável. (Renomeado de plate_supplier_id; o cadastro fonte mudou de
+  // maestro.plate_supplier para maestro.fabric_supplier.)
   await runCompatibilityQuery(`
     ALTER TABLE IF EXISTS maestro.conformity_certificates
-    ADD COLUMN IF NOT EXISTS plate_supplier_id INTEGER REFERENCES maestro.plate_supplier(id)
-  `, 'maestro.conformity_certificates.plate_supplier_id');
+    ADD COLUMN IF NOT EXISTS fabric_supplier_id INTEGER REFERENCES maestro.fabric_supplier(id)
+  `, 'maestro.conformity_certificates.fabric_supplier_id');
+
+  // Compat: migra dados gravados em plate_supplier_id (modelo antigo) para
+  // fabric_supplier_id, casando pelo nome do fornecedor. Idempotente — só
+  // toca linhas onde fabric_supplier_id ainda é NULL e plate_supplier_id
+  // tem valor mapeável. Se a coluna antiga não existe, no-op.
+  await runCompatibilityQuery(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_schema = 'maestro'
+           AND table_name   = 'conformity_certificates'
+           AND column_name  = 'plate_supplier_id'
+      ) THEN
+        UPDATE maestro.conformity_certificates c
+           SET fabric_supplier_id = fs.id
+          FROM maestro.plate_supplier ps
+          JOIN maestro.fabric_supplier fs ON UPPER(fs.name) = UPPER(ps.name)
+         WHERE c.plate_supplier_id = ps.id
+           AND c.fabric_supplier_id IS NULL;
+      END IF;
+    END $$;
+  `, 'maestro.conformity_certificates.plate_supplier_id→fabric_supplier_id');
 
   await runCompatibilityQuery(`
     CREATE INDEX IF NOT EXISTS conformity_certificates_material_idx
       ON maestro.conformity_certificates (material_id)
   `, 'conformity_certificates_material_idx');
 
+  // Índice de lookup do auto-fill: (fabric_supplier_id, quantidade_camadas).
+  // Drop do antigo (plate_supplier_id) é seguro — não bloqueia o boot mesmo
+  // se ele já não existir.
+  await runCompatibilityQuery(`
+    DROP INDEX IF EXISTS maestro.conformity_certificates_lookup_idx
+  `, 'drop legacy conformity_certificates_lookup_idx');
+
   await runCompatibilityQuery(`
     CREATE INDEX IF NOT EXISTS conformity_certificates_lookup_idx
-      ON maestro.conformity_certificates (plate_supplier_id, quantidade_camadas)
+      ON maestro.conformity_certificates (fabric_supplier_id, quantidade_camadas)
   `, 'conformity_certificates_lookup_idx');
 }
 
@@ -521,6 +571,26 @@ async function ensureCronJobsTables() {
     CREATE INDEX IF NOT EXISTS cron_job_versions_job_idx
       ON maestro.cron_job_versions (job_id, version_number DESC)
   `, 'cron_job_versions_job_idx');
+
+  await runCompatibilityQuery(`
+    WITH job AS (
+      INSERT INTO maestro.cron_jobs (name, description)
+      VALUES ('invoice-integrity', 'Valida hash SHA-256 e existencia dos documentos de NF ativos')
+      ON CONFLICT (name) DO UPDATE SET description = EXCLUDED.description
+      RETURNING id
+    )
+    INSERT INTO maestro.cron_job_versions
+      (job_id, version_number, status, cron_expression, code, notes)
+    SELECT id, 1.00, 'OPE', '0 0 2 * * 1',
+      'const { run } = require(''./invoiceIntegrity.cjs''); await run(ctx);',
+      'Seed automatico da migracao Spring -> Node'
+    FROM job
+    ON CONFLICT (job_id, version_number) DO UPDATE SET
+      status = 'OPE',
+      cron_expression = EXCLUDED.cron_expression,
+      code = EXCLUDED.code,
+      notes = EXCLUDED.notes
+  `, 'cron invoice-integrity seed');
 }
 
 async function ensureCronRunsTable() {
@@ -586,6 +656,461 @@ async function ensureFabricSupplierTable() {
       updated_at  TIMESTAMPTZ
     )
   `, 'maestro.fabric_supplier');
+}
+
+// Tabelas de Enfesto compartilhadas com o Spring (printServiceCarbon). Criadas
+// pelo Maestro porque o Spring ainda não rodou contra este banco. Schema deve
+// bater com as entidades JPA do Spring (workorder_table, Plates, plate_event)
+// para que ddl-auto:update fique no-op quando o Spring subir.
+// NOTA: apesar de @Table(name="Workorder_table") na entidade, o
+// SpringPhysicalNamingStrategy do Hibernate fez fold para minúsculas, então a
+// tabela no Postgres é workorder_table (unquoted, case-insensitive).
+async function ensureWorkorderSharedTables() {
+  await runCompatibilityQuery(
+    `CREATE SEQUENCE IF NOT EXISTS public.workorder_sequence START 250`,
+    'public.workorder_sequence',
+  );
+  await runCompatibilityQuery(
+    `CREATE SEQUENCE IF NOT EXISTS public.plate_sequence`,
+    'public.plate_sequence',
+  );
+  await runCompatibilityQuery(
+    `CREATE SEQUENCE IF NOT EXISTS public.hibernate_sequence`,
+    'public.hibernate_sequence',
+  );
+
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS public.workorder_table (
+      id              BIGINT PRIMARY KEY DEFAULT nextval('public.workorder_sequence'),
+      creation_date   TIMESTAMP,
+      change_date     TIMESTAMP,
+      lote            VARCHAR(255),
+      plates_quantity BIGINT,
+      plates_layres   BIGINT,
+      cloth_type      VARCHAR(255),
+      cloth_batch     VARCHAR(255),
+      fabric_supplier VARCHAR(255),
+      plastic_type    VARCHAR(255),
+      plastic_batch   VARCHAR(255),
+      resined_batch   VARCHAR(255),
+      enfesto_date    DATE
+    )
+  `, 'public.workorder_table');
+
+  // Compatibilidade: adiciona fabric_supplier caso a tabela tenha sido criada
+  // antes por uma versão do Spring sem o campo.
+  await runCompatibilityQuery(
+    `ALTER TABLE IF EXISTS public.workorder_table ADD COLUMN IF NOT EXISTS fabric_supplier VARCHAR(255)`,
+    'public.workorder_table.fabric_supplier',
+  );
+
+  // Compatibilidade: bancos legados criados pelo Spring tinham id BIGINT sem
+  // default (Hibernate fornecia o id via @GeneratedValue). Como o INSERT do
+  // Maestro não passa id explicitamente, garantimos o DEFAULT nextval e
+  // sincronizamos a sequence para que o próximo valor seja > MAX(id) existente.
+  await runCompatibilityQuery(
+    `ALTER TABLE IF EXISTS public.workorder_table
+       ALTER COLUMN id SET DEFAULT nextval('public.workorder_sequence')`,
+    'public.workorder_table.id default',
+  );
+  await runCompatibilityQuery(
+    `SELECT setval('public.workorder_sequence',
+       GREATEST((SELECT COALESCE(MAX(id), 0) FROM public.workorder_table) + 1, 250),
+       false)`,
+    'public.workorder_sequence sync',
+  );
+  await runCompatibilityQuery(
+    `ALTER TABLE IF EXISTS public.plates
+       ALTER COLUMN id SET DEFAULT nextval('public.plate_sequence')`,
+    'public.plates.id default',
+  );
+  await runCompatibilityQuery(
+    `SELECT setval('public.plate_sequence',
+       GREATEST((SELECT COALESCE(MAX(id), 0) FROM public.plates) + 1, 1),
+       false)`,
+    'public.plate_sequence sync',
+  );
+  await runCompatibilityQuery(
+    `ALTER TABLE IF EXISTS public.plate_event
+       ALTER COLUMN id SET DEFAULT nextval('public.hibernate_sequence')`,
+    'public.plate_event.id default',
+  );
+  await runCompatibilityQuery(
+    `SELECT setval('public.hibernate_sequence',
+       GREATEST((SELECT COALESCE(MAX(id), 0) FROM public.plate_event) + 1, 1),
+       false)`,
+    'public.hibernate_sequence sync',
+  );
+
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS public.plates (
+      id              BIGINT PRIMARY KEY DEFAULT nextval('public.plate_sequence'),
+      workorderid     BIGINT REFERENCES public.workorder_table(id),
+      plate_sequence  BIGINT,
+      status          VARCHAR(50),
+      layers          BIGINT,
+      actual_size     DOUBLE PRECISION,
+      init_size       DOUBLE PRECISION,
+      package_id      BIGINT
+    )
+  `, 'public.plates');
+
+  await runCompatibilityQuery(
+    `CREATE INDEX IF NOT EXISTS plates_workorder_idx ON public.plates (workorderid)`,
+    'plates_workorder_idx',
+  );
+
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS public.plate_event (
+      id                       BIGINT PRIMARY KEY DEFAULT nextval('public.hibernate_sequence'),
+      plate_id                 BIGINT REFERENCES public.plates(id),
+      event_type               VARCHAR(50),
+      event_date               TIMESTAMP,
+      consumption_reference_id BIGINT,
+      consumed_area            DOUBLE PRECISION,
+      consumed_length          DOUBLE PRECISION,
+      description              TEXT
+    )
+  `, 'public.plate_event');
+
+  await runCompatibilityQuery(
+    `CREATE INDEX IF NOT EXISTS plate_event_plate_idx ON public.plate_event (plate_id)`,
+    'plate_event_plate_idx',
+  );
+}
+
+// Tabelas Spring restantes (autoclave, cutting, invoices, receipts).
+// Spring nunca rodou contra este banco — Maestro precisa criar tudo antes da
+// Fase 1+ migrar as queries para JS. Schema bate com as entidades Hibernate
+// (SpringPhysicalNamingStrategy camelCase → snake_case) para que o Spring
+// legado continue funcionando enquanto sobrevive (ddl-auto:update vira no-op).
+// Typos do Spring preservados: cycle_obervation, plates_layres.
+async function ensureCarbonSharedTables() {
+  // 5.0.1 autoclave_cycle — status migrado p/ VARCHAR (R-1). Spring não tinha
+  // @Enumerated → gravava ordinal int. Aqui já nasce STRING; em Fase 2 o
+  // Spring precisa receber @Enumerated(EnumType.STRING) + backfill no banco.
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS public.autoclave_cycle (
+      id               BIGSERIAL PRIMARY KEY,
+      creation_date    TIMESTAMP,
+      start_time       TIMESTAMP,
+      cicle_date       TIMESTAMP,
+      status           VARCHAR(40),
+      report_file_id   UUID REFERENCES maestro.file_storage(id),
+      report_file_path TEXT,
+      cycle_obervation TEXT
+    )
+  `, 'public.autoclave_cycle');
+
+  // Compatibilidade: bancos legados criados pelo Spring antes da Fase 2 não
+  // tinham report_file_id (a FK para maestro.file_storage foi adicionada na
+  // migração). CREATE TABLE IF NOT EXISTS não adiciona colunas em tabela
+  // existente — precisamos do ALTER explícito.
+  await runCompatibilityQuery(
+    `ALTER TABLE IF EXISTS public.autoclave_cycle
+       ADD COLUMN IF NOT EXISTS report_file_id UUID REFERENCES maestro.file_storage(id)`,
+    'public.autoclave_cycle.report_file_id',
+  );
+
+  // Compatibilidade R-1: Spring antigo gravava CycleStatus como ordinal SMALLINT
+  // (sem @Enumerated). Maestro espera VARCHAR. Faz backfill ordinal→string e
+  // converte o tipo. Idempotente: só roda se a coluna ainda for numérica.
+  await runCompatibilityQuery(`
+    DO $$
+    DECLARE
+      current_type text;
+      ck record;
+    BEGIN
+      SELECT data_type INTO current_type
+        FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name   = 'autoclave_cycle'
+         AND column_name  = 'status';
+
+      IF current_type IN ('smallint', 'integer', 'bigint') THEN
+        -- 0) Spring/Hibernate cria CHECK constraints (status >= 0 AND status <= N)
+        --    para enums ordinais. Precisa dropar antes do ALTER TYPE, senão o
+        --    Postgres falha ao revalidar a constraint contra a nova coluna text.
+        FOR ck IN
+          SELECT con.conname
+            FROM pg_constraint con
+            JOIN pg_class       cls ON cls.oid = con.conrelid
+            JOIN pg_namespace   nsp ON nsp.oid = cls.relnamespace
+           WHERE nsp.nspname = 'public'
+             AND cls.relname = 'autoclave_cycle'
+             AND con.contype = 'c'
+             AND pg_get_constraintdef(con.oid) ILIKE '%status%'
+        LOOP
+          EXECUTE format('ALTER TABLE public.autoclave_cycle DROP CONSTRAINT %I', ck.conname);
+        END LOOP;
+
+        -- 1) Converte o tipo da coluna (ordinal vira string '0','1',...).
+        ALTER TABLE public.autoclave_cycle
+          ALTER COLUMN status TYPE VARCHAR(40) USING status::text;
+
+        -- 2) Traduz os ordinais para os nomes do enum CycleStatus.
+        UPDATE public.autoclave_cycle SET status = CASE status
+          WHEN '0' THEN 'DUPLICADO'
+          WHEN '1' THEN 'CRIADO'
+          WHEN '2' THEN 'PENDENTE'
+          WHEN '3' THEN 'EM_ANDAMENTO'
+          WHEN '4' THEN 'PAUSADO'
+          WHEN '5' THEN 'CANCELADO'
+          WHEN '6' THEN 'REPASSE'
+          WHEN '7' THEN 'FINALIZADO'
+          ELSE status
+        END
+        WHERE status ~ '^[0-9]+$';
+      END IF;
+    END $$;
+  `, 'public.autoclave_cycle.status ordinal→string');
+
+  // 5.0.2 package. Apesar de @Table(name="Package") na entidade Spring, o
+  // SpringPhysicalNamingStrategy faz fold para minúsculas — a tabela no
+  // Postgres é "package" unquoted. Spring usa @SequenceGenerator com
+  // allocationSize=1 e nome package_autoclave_sequence.
+  await runCompatibilityQuery(
+    `CREATE SEQUENCE IF NOT EXISTS public.package_autoclave_sequence START 1`,
+    'public.package_autoclave_sequence',
+  );
+
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS public.package (
+      id                    BIGINT PRIMARY KEY DEFAULT nextval('public.package_autoclave_sequence'),
+      package_observations  TEXT,
+      cycle_id              BIGINT REFERENCES public.autoclave_cycle(id),
+      creation_date         TIMESTAMP,
+      finish_date           TIMESTAMP,
+      package_status        VARCHAR(40)
+    )
+  `, 'public.package');
+
+  await runCompatibilityQuery(
+    `CREATE INDEX IF NOT EXISTS package_cycle_idx ON public.package (cycle_id)`,
+    'package_cycle_idx',
+  );
+
+  // 5.0.3 FK plates.package_id → package.id. Coluna já criada em
+  // ensureWorkorderSharedTables sem FK (package não existia ainda).
+  // Adiciona a constraint de forma idempotente — se já existe, ignora.
+  await runCompatibilityQuery(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE constraint_name = 'plates_package_fk'
+          AND table_name = 'plates'
+      ) THEN
+        ALTER TABLE public.plates
+          ADD CONSTRAINT plates_package_fk
+          FOREIGN KEY (package_id) REFERENCES public.package(id);
+      END IF;
+    END $$;
+  `, 'plates_package_fk');
+
+  // 5.0.4 cutting_records — MaterialType e KitType como STRING.
+  // created_by é metadado novo (Spring não tinha auth — ver §4.7).
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS public.cutting_records (
+      id                BIGSERIAL PRIMARY KEY,
+      production_date   TIMESTAMP NOT NULL,
+      order_number      VARCHAR(120) NOT NULL,
+      order_description VARCHAR(255) NOT NULL,
+      created_at        TIMESTAMP NOT NULL DEFAULT NOW(),
+      created_by        VARCHAR(120),
+      material          VARCHAR(40),
+      kit_type          VARCHAR(40),
+      seal              VARCHAR(120)
+    )
+  `, 'public.cutting_records');
+
+  // Compatibilidade: cutting_records criada pelo Spring legado não tinha
+  // created_at / created_by / material / kit_type / seal. CREATE TABLE IF NOT
+  // EXISTS é no-op em tabela existente — precisa ALTER explícito.
+  await runCompatibilityQuery(
+    `ALTER TABLE IF EXISTS public.cutting_records
+       ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT NOW()`,
+    'public.cutting_records.created_at',
+  );
+  await runCompatibilityQuery(
+    `ALTER TABLE IF EXISTS public.cutting_records
+       ADD COLUMN IF NOT EXISTS created_by VARCHAR(120)`,
+    'public.cutting_records.created_by',
+  );
+  await runCompatibilityQuery(
+    `ALTER TABLE IF EXISTS public.cutting_records
+       ADD COLUMN IF NOT EXISTS material VARCHAR(40)`,
+    'public.cutting_records.material',
+  );
+  await runCompatibilityQuery(
+    `ALTER TABLE IF EXISTS public.cutting_records
+       ADD COLUMN IF NOT EXISTS kit_type VARCHAR(40)`,
+    'public.cutting_records.kit_type',
+  );
+  await runCompatibilityQuery(
+    `ALTER TABLE IF EXISTS public.cutting_records
+       ADD COLUMN IF NOT EXISTS seal VARCHAR(120)`,
+    'public.cutting_records.seal',
+  );
+
+  await runCompatibilityQuery(
+    `CREATE INDEX IF NOT EXISTS cutting_records_order_idx
+       ON public.cutting_records (order_number)`,
+    'cutting_records_order_idx',
+  );
+
+  // 5.0.5 plate_consumptions — supplier (SupplierType STRING).
+  // OPERA usa plate_id; COMTEC/PROTECTA não (validado no service da Fase 3).
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS public.plate_consumptions (
+      id                BIGSERIAL PRIMARY KEY,
+      used_metrage      NUMERIC(10,2) NOT NULL,
+      batch_number      VARCHAR(120),
+      supplier          VARCHAR(40) NOT NULL,
+      layer_quantity    VARCHAR(40) NOT NULL,
+      manual_batch      BOOLEAN NOT NULL,
+      plate_id          BIGINT REFERENCES public.plates(id),
+      cutting_record_id BIGINT NOT NULL REFERENCES public.cutting_records(id) ON DELETE CASCADE
+    )
+  `, 'public.plate_consumptions');
+
+  await runCompatibilityQuery(
+    `CREATE INDEX IF NOT EXISTS plate_consumptions_record_idx
+       ON public.plate_consumptions (cutting_record_id)`,
+    'plate_consumptions_record_idx',
+  );
+
+  await runCompatibilityQuery(
+    `CREATE INDEX IF NOT EXISTS plate_consumptions_plate_idx
+       ON public.plate_consumptions (plate_id)`,
+    'plate_consumptions_plate_idx',
+  );
+
+  // 5.0.6 invoices
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS public.invoices (
+      id                   BIGSERIAL PRIMARY KEY,
+      invoice_number       VARCHAR(120) NOT NULL UNIQUE,
+      nf_file_path         TEXT,
+      correction_file_path TEXT,
+      created_at           TIMESTAMP NOT NULL DEFAULT NOW(),
+      created_by           VARCHAR(120)
+    )
+  `, 'public.invoices');
+
+  // 5.0.7 plate_consumption_invoices (junction PlateConsumption × Invoice)
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS public.plate_consumption_invoices (
+      id                   BIGSERIAL PRIMARY KEY,
+      used_metrage         NUMERIC(10,2) NOT NULL,
+      plate_consumption_id BIGINT NOT NULL REFERENCES public.plate_consumptions(id) ON DELETE CASCADE,
+      invoice_id           BIGINT NOT NULL REFERENCES public.invoices(id) ON DELETE CASCADE
+    )
+  `, 'public.plate_consumption_invoices');
+
+  await runCompatibilityQuery(
+    `CREATE INDEX IF NOT EXISTS pci_invoice_idx
+       ON public.plate_consumption_invoices (invoice_id)`,
+    'pci_invoice_idx',
+  );
+
+  await runCompatibilityQuery(
+    `CREATE INDEX IF NOT EXISTS pci_consumption_idx
+       ON public.plate_consumption_invoices (plate_consumption_id)`,
+    'pci_consumption_idx',
+  );
+
+  // 5.0.8 consumption_splits — outra junção, usada para particionar consumo
+  // entre múltiplas NFs com regras de aging diferentes.
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS public.consumption_splits (
+      id                   BIGSERIAL PRIMARY KEY,
+      used_metrage         NUMERIC(10,2) NOT NULL,
+      invoice_id           BIGINT NOT NULL REFERENCES public.invoices(id) ON DELETE CASCADE,
+      plate_consumption_id BIGINT NOT NULL REFERENCES public.plate_consumptions(id) ON DELETE CASCADE
+    )
+  `, 'public.consumption_splits');
+
+  await runCompatibilityQuery(
+    `CREATE INDEX IF NOT EXISTS splits_invoice_idx
+       ON public.consumption_splits (invoice_id)`,
+    'splits_invoice_idx',
+  );
+
+  await runCompatibilityQuery(
+    `CREATE INDEX IF NOT EXISTS splits_consumption_idx
+       ON public.consumption_splits (plate_consumption_id)`,
+    'splits_consumption_idx',
+  );
+
+  // 5.0.9 invoice_documents — versionamento via replaced_by_id + active.
+  // file_id (UUID em maestro.file_storage) é preferido daqui pra frente;
+  // storage_path mantido só para compat com NFs criadas antes do file_storage.
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS public.invoice_documents (
+      id                BIGSERIAL PRIMARY KEY,
+      invoice_id        BIGINT NOT NULL REFERENCES public.invoices(id) ON DELETE CASCADE,
+      type              VARCHAR(40) NOT NULL,
+      original_filename VARCHAR(255) NOT NULL,
+      storage_path      TEXT NOT NULL,
+      file_id           UUID REFERENCES maestro.file_storage(id),
+      file_size_bytes   BIGINT NOT NULL,
+      sha256_hash       VARCHAR(64) NOT NULL,
+      version           INTEGER NOT NULL,
+      active            BOOLEAN NOT NULL,
+      replaced_by_id    BIGINT REFERENCES public.invoice_documents(id),
+      uploaded_by       VARCHAR(120),
+      created_at        TIMESTAMP NOT NULL DEFAULT NOW()
+    )
+  `, 'public.invoice_documents');
+
+  await runCompatibilityQuery(
+    `CREATE INDEX IF NOT EXISTS invoice_documents_invoice_active_idx
+       ON public.invoice_documents (invoice_id, active)`,
+    'invoice_documents_invoice_active_idx',
+  );
+
+  // 5.0.10 document_integrity_checks — alimentado pelo cron semanal
+  // (Fase 4, mover Spring @Scheduled → maestro.cron_jobs).
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS public.document_integrity_checks (
+      id            BIGSERIAL PRIMARY KEY,
+      document_id   BIGINT NOT NULL REFERENCES public.invoice_documents(id) ON DELETE CASCADE,
+      status        VARCHAR(20) NOT NULL,
+      stored_hash   VARCHAR(64) NOT NULL,
+      computed_hash VARCHAR(64),
+      checked_at    TIMESTAMP NOT NULL DEFAULT NOW(),
+      notes         TEXT
+    )
+  `, 'public.document_integrity_checks');
+
+  await runCompatibilityQuery(
+    `CREATE INDEX IF NOT EXISTS integrity_doc_idx
+       ON public.document_integrity_checks (document_id)`,
+    'integrity_doc_idx',
+  );
+
+  // 5.0.11 "Receipt" (case-sensitive). Spring usa receipt_sequence START 250.
+  // receive_date mantido como VARCHAR porque o entity Spring grava como String.
+  await runCompatibilityQuery(
+    `CREATE SEQUENCE IF NOT EXISTS public.receipt_sequence START 250`,
+    'public.receipt_sequence',
+  );
+
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS public."Receipt" (
+      id           BIGINT PRIMARY KEY DEFAULT nextval('public.receipt_sequence'),
+      nf           VARCHAR(120),
+      intern_batch VARCHAR(120),
+      situation    VARCHAR(120),
+      quantity     VARCHAR(120),
+      responsible  VARCHAR(120),
+      observation  TEXT,
+      receive_date VARCHAR(40),
+      created_at   TIMESTAMP NOT NULL DEFAULT NOW(),
+      created_by   VARCHAR(120)
+    )
+  `, 'public.Receipt');
 }
 
 async function ensurePlateSizeTable() {

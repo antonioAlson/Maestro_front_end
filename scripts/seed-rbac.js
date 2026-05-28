@@ -70,6 +70,9 @@ const ROLE_DEFINITIONS = [
       'pcp_orders:read,create,update',
       'pcp_acompanhamento:read',
       'pcp_reports:read,export',
+      'workorders:*',
+      'plates:read,create,update',
+      'autoclave:*',
       'metrics:read',
     ),
   },
@@ -80,6 +83,9 @@ const ROLE_DEFINITIONS = [
       'pcp_orders:read',
       'pcp_acompanhamento:read',
       'pcp_reports:read',
+      'workorders:read',
+      'plates:read',
+      'autoclave:read',
       'metrics:read',
     ),
   },
@@ -90,6 +96,7 @@ const ROLE_DEFINITIONS = [
       'cutting_projects:read,create,update,clone,export',
       'cutting_plans:read,create,update',
       'cutting_attachments:*',
+      'cutting_records:*',
       'metrics:read',
     ),
   },
@@ -106,9 +113,8 @@ const ROLE_DEFINITIONS = [
     name: 'FATURAMENTO',
     description: 'Gestão de faturamento, NFs e aging',
     permissions: perms(
-      'invoicing:*',
-      'invoicing_aging:read',
-      'invoicing_integrity:read',
+      'invoices:*',
+      'receipts:*',
       'metrics:read',
     ),
   },
@@ -118,6 +124,8 @@ const ROLE_DEFINITIONS = [
     permissions: ALL_READ,
   },
 ];
+
+const OBSOLETE_RESOURCES = ['invoicing', 'invoicing_aging', 'invoicing_integrity'];
 
 // ---------------------------------------------------------------------------
 // Seed logic
@@ -186,6 +194,27 @@ async function seedRolePermissions(roleIds) {
     console.log(`  ✓ ${name}: ${permIds.length} permissions linked`);
   }
   console.log(`  ✓ ${total} role_permissions total`);
+}
+
+async function cleanupObsoletePermissions() {
+  if (OBSOLETE_RESOURCES.length === 0) return;
+  console.log('🧹 Removing obsolete permissions...');
+  const deletedLinks = await q(
+    `DELETE FROM maestro.role_permissions rp
+      USING maestro.permissions p
+      WHERE p.id = rp.permission_id
+        AND p.resource = ANY($1)
+      RETURNING rp.permission_id`,
+    [OBSOLETE_RESOURCES],
+  );
+  const deletedPermissions = await q(
+    `DELETE FROM maestro.permissions
+      WHERE resource = ANY($1)
+      RETURNING id`,
+    [OBSOLETE_RESOURCES],
+  );
+  console.log(`  ✓ ${deletedLinks.rowCount} role links removed`);
+  console.log(`  ✓ ${deletedPermissions.rowCount} obsolete permissions removed`);
 }
 
 async function bootstrapMaster(roleIds) {
@@ -259,6 +288,7 @@ async function main() {
     await seedPermissions();
     const roleIds = await seedRoles();
     await seedRolePermissions(roleIds);
+    await cleanupObsoletePermissions();
     await bootstrapMaster(roleIds);
     console.log('\n✅ seed-rbac complete\n');
   } catch (err) {

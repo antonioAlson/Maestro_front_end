@@ -7,8 +7,8 @@ const SELECT_FIELDS = `
   c.material_id,
   m.nome AS material_nome,
   m.tipo AS material_tipo,
-  c.plate_supplier_id,
-  ps.name AS plate_supplier_nome,
+  c.fabric_supplier_id,
+  fs.name AS fabric_supplier_nome,
   c.quantidade_camadas,
   c.espessura_mm,
   c.medidas,
@@ -22,7 +22,7 @@ const SELECT_FIELDS = `
 const FROM_JOIN = `
   FROM maestro.conformity_certificates c
   JOIN maestro.materials m ON m.id = c.material_id
-  LEFT JOIN maestro.plate_supplier ps ON ps.id = c.plate_supplier_id
+  LEFT JOIN maestro.fabric_supplier fs ON fs.id = c.fabric_supplier_id
 `;
 
 function parsePositiveNumber(value) {
@@ -112,15 +112,15 @@ export const criarCertificado = async (req, res) => {
     const nome_comercial = String(req.body?.nome_comercial || '').trim();
     const material_id = Number(req.body?.material_id);
     const descricao = req.body?.descricao ? String(req.body.descricao).trim() : null;
-    const plate_supplier_id = req.body?.plate_supplier_id !== undefined && req.body.plate_supplier_id !== null && req.body.plate_supplier_id !== ''
-      ? Number(req.body.plate_supplier_id)
+    const fabric_supplier_id = req.body?.fabric_supplier_id !== undefined && req.body.fabric_supplier_id !== null && req.body.fabric_supplier_id !== ''
+      ? Number(req.body.fabric_supplier_id)
       : null;
 
     const missing = [];
     if (!numero) missing.push('numero');
     if (!nome_comercial) missing.push('nome_comercial');
     if (!Number.isFinite(material_id)) missing.push('material_id');
-    if (plate_supplier_id !== null && !Number.isFinite(plate_supplier_id)) missing.push('plate_supplier_id');
+    if (fabric_supplier_id !== null && !Number.isFinite(fabric_supplier_id)) missing.push('fabric_supplier_id');
     if (missing.length) {
       return res.status(400).json({
         success: false,
@@ -134,14 +134,14 @@ export const criarCertificado = async (req, res) => {
 
     const inserted = await pool.query(
       `INSERT INTO maestro.conformity_certificates
-         (numero, nome_comercial, material_id, plate_supplier_id, quantidade_camadas, espessura_mm, medidas, descricao, created_by)
+         (numero, nome_comercial, material_id, fabric_supplier_id, quantidade_camadas, espessura_mm, medidas, descricao, created_by)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING id`,
       [
         numero,
         nome_comercial,
         material_id,
-        plate_supplier_id,
+        fabric_supplier_id,
         legacy.quantidade_camadas,
         legacy.espessura_mm,
         JSON.stringify(medidas),
@@ -153,7 +153,7 @@ export const criarCertificado = async (req, res) => {
     return res.status(201).json({ success: true, data: await getFullCertificate(inserted.rows[0].id) });
   } catch (error) {
     if (error.code === '23505') return res.status(409).json({ success: false, message: 'Já existe um certificado com esse número.' });
-    if (error.code === '23503') return res.status(400).json({ success: false, message: 'Material ou fornecedor de placa inexistente.' });
+    if (error.code === '23503') return res.status(400).json({ success: false, message: 'Material ou fornecedor de material balístico inexistente.' });
     console.error('Erro ao criar certificado de conformidade:', error);
     return res.status(500).json({ success: false, message: `Erro: ${error.message}` });
   }
@@ -166,10 +166,10 @@ export const atualizarCertificado = async (req, res) => {
     if (req.body?.numero !== undefined) fields.numero = String(req.body.numero).trim();
     if (req.body?.nome_comercial !== undefined) fields.nome_comercial = String(req.body.nome_comercial).trim();
     if (req.body?.material_id !== undefined) fields.material_id = Number(req.body.material_id);
-    if (req.body?.plate_supplier_id !== undefined) {
-      fields.plate_supplier_id = req.body.plate_supplier_id === null || req.body.plate_supplier_id === ''
+    if (req.body?.fabric_supplier_id !== undefined) {
+      fields.fabric_supplier_id = req.body.fabric_supplier_id === null || req.body.fabric_supplier_id === ''
         ? null
-        : Number(req.body.plate_supplier_id);
+        : Number(req.body.fabric_supplier_id);
     }
     if (req.body?.descricao !== undefined) fields.descricao = req.body.descricao === null || req.body.descricao === ''
       ? null

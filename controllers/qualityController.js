@@ -4,7 +4,6 @@ import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
-import axios from 'axios';
 import { query } from '../config/database.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -166,9 +165,9 @@ export const deleteCertificate = async (req, res) => {
 // usuário revisa e salva via POST /api/quality normal.
 //
 // Fluxo:
-//   1. Chama Carbon GET /invoices/{number}/quality-source.
+//   1. Consulta as tabelas Carbon/Spring diretamente no PostgreSQL.
 //   2. Para cada consumo, parseia layer_quantity e busca cert. de conformidade
-//      por (plate_supplier_id, quantidade_camadas) — agrega únicos.
+//      por (fabric_supplier_id, quantidade_camadas) — agrega únicos.
 //   3. Extrai fornecedor_tecido do(s) workorder(s).
 //   4. Devolve draft + warnings para o frontend exibir.
 export const fromInvoice = async (req, res) => {
@@ -177,18 +176,8 @@ export const fromInvoice = async (req, res) => {
     return res.status(400).json({ success: false, message: '"invoice_number" é obrigatório.' });
   }
 
-  const carbonUrl = process.env.CARBON_API_URL;
-  if (!carbonUrl) {
-    return res.status(500).json({
-      success: false,
-      message: 'CARBON_API_URL não configurado no Maestro.',
-    });
-  }
-
   try {
-    const url = `${carbonUrl.replace(/\/+$/, '')}/invoices/${encodeURIComponent(invoiceNumber)}/quality-source`;
-    const carbonResp = await axios.get(url, { timeout: 15_000 });
-    const source = carbonResp.data;
+    const source = await findQualitySourceByInvoice(invoiceNumber);
 
     const warnings = [];
     const draft = buildDraftFromQualitySource(source);
@@ -220,20 +209,86 @@ export const fromInvoice = async (req, res) => {
 
     return res.json({ success: true, data: { draft, warnings } });
   } catch (err) {
-    const status = err?.response?.status;
-    if (status === 404) {
+    if (err?.status === 404) {
       return res.status(404).json({
         success: false,
-        message: `NF ${invoiceNumber} não encontrada no Carbon.`,
+        message: err.message,
       });
     }
-    console.error('[Quality] fromInvoice error:', err?.response?.data || err.message);
-    return res.status(502).json({
+    console.error('[Quality] fromInvoice error:', err.message);
+    return res.status(500).json({
       success: false,
-      message: `Falha ao consultar Carbon: ${err?.response?.data?.message || err.message}`,
+      message: `Falha ao consultar dados da NF: ${err.message}`,
     });
   }
 };
+
+async function findQualitySourceByInvoice(invoiceNumber) {
+  const { rows } = await query(
+    `
+      SELECT
+        i.invoice_number,
+        cr.id AS cr_id,
+        cr.order_number,
+        cr.order_description,
+        cr.material,
+        cr.kit_type,
+        pc.supplier,
+        pc.layer_quantity,
+        pc.batch_number,
+        pci.used_metrage AS invoiced_metrage,
+        wo.id AS wo_id,
+        wo.lote,
+        wo.cloth_type,
+        wo.cloth_batch,
+        wo.fabric_supplier
+      FROM public.invoices i
+      JOIN public.plate_consumption_invoices pci ON pci.invoice_id = i.id
+      JOIN public.plate_consumptions pc          ON pc.id = pci.plate_consumption_id
+      JOIN public.cutting_records cr             ON cr.id = pc.cutting_record_id
+      LEFT JOIN public.plates p                ON p.id = pc.plate_id
+      LEFT JOIN public.workorder_table wo      ON wo.id = p.workorderid
+      WHERE UPPER(i.invoice_number) = UPPER($1)
+      ORDER BY pci.id ASC
+    `,
+    [invoiceNumber],
+  );
+
+  if (rows.length === 0) {
+    const error = new Error(`NF ${invoiceNumber} não encontrada ou sem consumos vinculados.`);
+    error.status = 404;
+    throw error;
+  }
+
+  const first = rows[0];
+  const total = rows.reduce((sum, row) => sum + Number(row.invoiced_metrage || 0), 0);
+  return {
+    invoiceNumber: first.invoice_number,
+    cuttingRecord: {
+      id: first.cr_id,
+      orderNumber: first.order_number,
+      orderDescription: first.order_description,
+      material: first.material,
+      kitType: first.kit_type,
+    },
+    totalSquareMeters: total,
+    consumptions: rows.map((row) => ({
+      supplier: row.supplier,
+      layerQuantity: row.layer_quantity,
+      batchNumber: row.batch_number,
+      invoicedMetrage: row.invoiced_metrage,
+      workorder: row.wo_id
+        ? {
+            id: row.wo_id,
+            lote: row.lote,
+            clothType: row.cloth_type,
+            clothBatch: row.cloth_batch,
+            fabricSupplier: row.fabric_supplier,
+          }
+        : null,
+    })),
+  };
+}
 
 function buildDraftFromQualitySource(source) {
   const cr = source?.cuttingRecord || {};
@@ -283,8 +338,8 @@ async function lookupConformityCertificates(consumptions) {
     const { rows } = await query(
       `SELECT c.numero, c.nome_comercial
          FROM maestro.conformity_certificates c
-         JOIN maestro.plate_supplier ps ON ps.id = c.plate_supplier_id
-        WHERE UPPER(ps.name) = UPPER($1)
+         JOIN maestro.fabric_supplier fs ON fs.id = c.fabric_supplier_id
+        WHERE UPPER(fs.name) = UPPER($1)
           AND c.quantidade_camadas = $2
           AND c.ativo = true
         ORDER BY c.created_at DESC

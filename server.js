@@ -25,6 +25,13 @@ import conformityCertificatesRoutes from './routes/conformityCertificates.js';
 import productionConfigRoutes from './routes/productionConfig.js';
 import appPreferencesRoutes from './routes/appPreferences.js';
 import rastreabilidadesRoutes from './routes/rastreabilidades.js';
+import workorderRoutes from './routes/workorder.js';
+import plateRoutes from './routes/plate.js';
+import plateEventsRoutes from './routes/plateEvents.js';
+import autoclaveRoutes from './routes/autoclave.js';
+import cuttingRoutes from './routes/cutting.js';
+import invoiceRoutes from './routes/invoices.js';
+import receiptRoutes from './routes/receipt.js';
 import { ensureDatabaseCompatibility } from './config/database.js';
 import { loadOpeVersions } from './cron_jobs/scheduler.js';
 import { migrateLegacyCronJobs } from './cron_jobs/migrateLegacyJobs.js';
@@ -105,6 +112,13 @@ app.use('/api/conformity-certificates',  conformityCertificatesRoutes);
 app.use('/api/production-config',        productionConfigRoutes);
 app.use('/api/app-preferences',          appPreferencesRoutes);
 app.use('/api/rastreabilidades',         rastreabilidadesRoutes);
+app.use('/api/workorder',                workorderRoutes);
+app.use('/api/plate',                    plateRoutes);
+app.use('/api/plate-events',             plateEventsRoutes);
+app.use('/api/autoclave',                autoclaveRoutes);
+app.use('/api/cutting',                  cuttingRoutes);
+app.use('/api',                          invoiceRoutes);
+app.use('/api/receipt',                  receiptRoutes);
 
 // Rota 404
 app.use((req, res) => {
