@@ -219,7 +219,8 @@ async function ensureAppPreferencesTable() {
 
   await runCompatibilityQuery(`
     INSERT INTO maestro.app_preferences (key, value, description) VALUES
-      ('corte_romaneio_opera_enabled', '0', 'Permite gerar romaneio para registros de corte cujo único fornecedor é OPERA (0 = desabilitado, 1 = habilitado)')
+      ('corte_romaneio_opera_enabled', '0', 'Permite gerar romaneio para registros de corte cujo único fornecedor é OPERA (0 = desabilitado, 1 = habilitado)'),
+      ('quality_certificate_signature_user_id', '', 'Usuário exibido como assinante do certificado de qualidade')
     ON CONFLICT (key) DO NOTHING
   `, 'app_preferences seed');
 }
@@ -1664,6 +1665,7 @@ async function ensureQualityCertificatesTable() {
       certificados_conformidade JSONB NOT NULL DEFAULT '[]'::jsonb,
       garantia_anos            INTEGER DEFAULT 5,
       created_by               INTEGER REFERENCES maestro.users(id),
+      signature_user_id         INTEGER REFERENCES maestro.users(id),
       created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
       updated_at               TIMESTAMPTZ
     )
@@ -1689,6 +1691,11 @@ async function ensureQualityCertificatesTable() {
     ALTER TABLE IF EXISTS maestro.quality_certificates
     ADD COLUMN IF NOT EXISTS cutting_record_id BIGINT
   `, 'maestro.quality_certificates.cutting_record_id');
+
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.quality_certificates
+    ADD COLUMN IF NOT EXISTS signature_user_id INTEGER REFERENCES maestro.users(id)
+  `, 'maestro.quality_certificates.signature_user_id');
 
   await runCompatibilityQuery(`
     ALTER TABLE IF EXISTS maestro.quality_certificates

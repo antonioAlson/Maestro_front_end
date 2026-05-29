@@ -2,6 +2,7 @@ import express from 'express';
 import {
   obterPreferencias,
   atualizarPreferencias,
+  listarAssinantesCertificado,
 } from '../controllers/appPreferencesController.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
@@ -10,6 +11,7 @@ const router = express.Router();
 
 // Leitura liberada para qualquer usuário autenticado — flags afetam o
 // comportamento das telas e são consultadas pelo frontend sem permissão extra.
+router.get('/quality-certificate-signers', authenticate, requirePermission('app_preferences', 'update'), listarAssinantesCertificado);
 router.get('/',   authenticate, obterPreferencias);
 router.patch('/', authenticate, requirePermission('app_preferences', 'update'), atualizarPreferencias);
 
