@@ -54,11 +54,12 @@ async function salvarOuAtualizar(issue) {
       previsao,
       project,
       fabrica_manta,
+      nota_fiscal,
       produced_at,
       last_updated_at
     )
     VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8, $9,
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
       CASE WHEN $4 = 'Produzido' THEN NOW() ELSE NULL END,
       NOW()
     )
@@ -72,6 +73,7 @@ async function salvarOuAtualizar(issue) {
       previsao = EXCLUDED.previsao,
       project = EXCLUDED.project,
       fabrica_manta = EXCLUDED.fabrica_manta,
+      nota_fiscal = EXCLUDED.nota_fiscal,
       produced_at = COALESCE(
         maestro.jira_cards.produced_at,
         CASE WHEN EXCLUDED.status = 'Produzido' THEN NOW() ELSE NULL END
@@ -89,6 +91,7 @@ async function salvarOuAtualizar(issue) {
     issue.previsao || null,
     issue.project || null,
     issue.fabricaManta || null,
+    issue.notaFiscal || null,
   ];
 
   try {
@@ -106,7 +109,7 @@ async function buscarIssues(jql, nextPageToken = null) {
     jql,
     maxResults: 100,
     fields:
-      "issuetype,summary,status,customfield_10039,customfield_11298,customfield_10245,customfield_11353,customfield_11329",
+      "issuetype,summary,status,customfield_10039,customfield_11298,customfield_10245,customfield_11353,customfield_11329,customfield_10101",
   };
 
   if (nextPageToken) {
@@ -181,6 +184,15 @@ async function processar() {
             : fabricaMantaRaw || "";
 
         // ==========================
+        //  Nº DA NOTA FISCAL (customfield_10101)
+        // ==========================
+        const notaFiscalRaw = fields.customfield_10101;
+        const notaFiscal =
+          typeof notaFiscalRaw === "object"
+            ? notaFiscalRaw?.value
+            : notaFiscalRaw || "";
+
+        // ==========================
         //  SALVAR
         // ==========================
         await salvarOuAtualizar({
@@ -193,6 +205,7 @@ async function processar() {
           previsao: previsaoRaw,
           project,
           fabricaManta,
+          notaFiscal,
         });
 
         total++;

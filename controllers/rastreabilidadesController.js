@@ -6,6 +6,23 @@ const SELECT_FIELDS = `
   r.certificate_id,
   c.numero          AS certificate_numero,
   c.nome_comercial  AS certificate_nome_comercial,
+  c.material_variant_id,
+  mv.nome           AS material_variant_nome,
+  c.fabric_supplier_id,
+  fs.name           AS fabric_supplier_nome,
+  COALESCE((
+    SELECT json_agg(
+      json_build_object(
+        'id',       mt.id,
+        'nome',     mt.nome,
+        'unidade',  mt.unidade,
+        'valor',    c.medidas->>(mt.id::text)
+      ) ORDER BY mt.nome
+    )
+      FROM maestro.material_measure_type_map mm
+      JOIN maestro.material_measure_types mt ON mt.id = mm.measure_type_id
+     WHERE mm.material_id = c.material_id AND mt.ativo = true
+  ), '[]'::json) AS certificate_medidas,
   m.nome            AS material_nome,
   r.tipo_material,
   r.tr,
@@ -27,6 +44,8 @@ const BASE_QUERY = `
   FROM maestro.rastreabilidades r
   JOIN maestro.conformity_certificates c ON c.id = r.certificate_id
   JOIN maestro.materials m                ON m.id = c.material_id
+  LEFT JOIN maestro.material_variants mv  ON mv.id = c.material_variant_id
+  LEFT JOIN maestro.fabric_supplier fs    ON fs.id = c.fabric_supplier_id
 `;
 
 async function loadProductionConfig(client = pool) {

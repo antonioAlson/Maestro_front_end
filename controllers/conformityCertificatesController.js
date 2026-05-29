@@ -7,11 +7,26 @@ const SELECT_FIELDS = `
   c.material_id,
   m.nome AS material_nome,
   m.tipo AS material_tipo,
+  c.material_variant_id,
+  mv.nome AS material_variant_nome,
   c.fabric_supplier_id,
   fs.name AS fabric_supplier_nome,
   c.quantidade_camadas,
   c.espessura_mm,
   c.medidas,
+  COALESCE((
+    SELECT json_agg(
+      json_build_object(
+        'id',       mt.id,
+        'nome',     mt.nome,
+        'unidade',  mt.unidade,
+        'valor',    c.medidas->>(mt.id::text)
+      ) ORDER BY mt.nome
+    )
+      FROM maestro.material_measure_type_map mm
+      JOIN maestro.material_measure_types mt ON mt.id = mm.measure_type_id
+     WHERE mm.material_id = c.material_id AND mt.ativo = true
+  ), '[]'::json) AS medidas_detalhadas,
   c.descricao,
   c.ativo,
   c.created_by,
@@ -22,6 +37,7 @@ const SELECT_FIELDS = `
 const FROM_JOIN = `
   FROM maestro.conformity_certificates c
   JOIN maestro.materials m ON m.id = c.material_id
+  LEFT JOIN maestro.material_variants mv ON mv.id = c.material_variant_id
   LEFT JOIN maestro.fabric_supplier fs ON fs.id = c.fabric_supplier_id
 `;
 
@@ -68,6 +84,18 @@ function legacyFromMedidas(medidas, measureDefs) {
   return { quantidade_camadas, espessura_mm };
 }
 
+async function validateMaterialVariant(materialId, variantId) {
+  if (variantId === null || variantId === undefined || variantId === '') return null;
+  const id = Number(variantId);
+  if (!Number.isFinite(id)) throw new Error('material_variant_id inválido.');
+  const result = await pool.query(
+    'SELECT id FROM maestro.material_variants WHERE id = $1 AND material_id = $2',
+    [id, materialId],
+  );
+  if (result.rows.length === 0) throw new Error('Variação não pertence ao material selecionado.');
+  return id;
+}
+
 async function getFullCertificate(id) {
   const full = await pool.query(
     `SELECT ${SELECT_FIELDS}
@@ -111,6 +139,9 @@ export const criarCertificado = async (req, res) => {
     const numero = String(req.body?.numero || '').trim();
     const nome_comercial = String(req.body?.nome_comercial || '').trim();
     const material_id = Number(req.body?.material_id);
+    const material_variant_id = Number.isFinite(material_id)
+      ? await validateMaterialVariant(material_id, req.body?.material_variant_id)
+      : null;
     const descricao = req.body?.descricao ? String(req.body.descricao).trim() : null;
     const fabric_supplier_id = req.body?.fabric_supplier_id !== undefined && req.body.fabric_supplier_id !== null && req.body.fabric_supplier_id !== ''
       ? Number(req.body.fabric_supplier_id)
@@ -134,13 +165,14 @@ export const criarCertificado = async (req, res) => {
 
     const inserted = await pool.query(
       `INSERT INTO maestro.conformity_certificates
-         (numero, nome_comercial, material_id, fabric_supplier_id, quantidade_camadas, espessura_mm, medidas, descricao, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         (numero, nome_comercial, material_id, material_variant_id, fabric_supplier_id, quantidade_camadas, espessura_mm, medidas, descricao, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING id`,
       [
         numero,
         nome_comercial,
         material_id,
+        material_variant_id,
         fabric_supplier_id,
         legacy.quantidade_camadas,
         legacy.espessura_mm,
@@ -166,6 +198,14 @@ export const atualizarCertificado = async (req, res) => {
     if (req.body?.numero !== undefined) fields.numero = String(req.body.numero).trim();
     if (req.body?.nome_comercial !== undefined) fields.nome_comercial = String(req.body.nome_comercial).trim();
     if (req.body?.material_id !== undefined) fields.material_id = Number(req.body.material_id);
+    if (req.body?.material_id !== undefined && req.body?.material_variant_id === undefined) {
+      fields.material_variant_id = null;
+    }
+    if (req.body?.material_variant_id !== undefined) {
+      fields.material_variant_id = req.body.material_variant_id === null || req.body.material_variant_id === ''
+        ? null
+        : Number(req.body.material_variant_id);
+    }
     if (req.body?.fabric_supplier_id !== undefined) {
       fields.fabric_supplier_id = req.body.fabric_supplier_id === null || req.body.fabric_supplier_id === ''
         ? null
@@ -180,12 +220,17 @@ export const atualizarCertificado = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Número e nome comercial não podem ser vazios.' });
     }
 
+    const current = await pool.query(
+      'SELECT material_id FROM maestro.conformity_certificates WHERE id = $1',
+      [id],
+    );
+    const materialId = fields.material_id || current.rows[0]?.material_id;
+
+    if (fields.material_variant_id !== undefined && fields.material_variant_id !== null) {
+      fields.material_variant_id = await validateMaterialVariant(materialId, fields.material_variant_id);
+    }
+
     if (req.body?.medidas !== undefined || fields.material_id !== undefined) {
-      const current = await pool.query(
-        'SELECT material_id FROM maestro.conformity_certificates WHERE id = $1',
-        [id],
-      );
-      const materialId = fields.material_id || current.rows[0]?.material_id;
       const measureDefs = await loadMaterialMeasures(materialId);
       const medidas = normalizeMedidas(req.body?.medidas, measureDefs);
       const legacy = legacyFromMedidas(medidas, measureDefs);

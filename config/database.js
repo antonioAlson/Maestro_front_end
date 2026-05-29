@@ -174,6 +174,7 @@ export async function ensureDatabaseCompatibility() {
   await ensureAuditTables();
   await ensureQualityCertificatesTable();
   await ensureJiraCardsProducedAt();
+  await ensureCuttingRecordsJiraKey();
   await ensurePlateSupplierTable();
   await ensurePlateSizeTable();
   await ensurePanelReceiptTable();
@@ -195,6 +196,7 @@ export async function ensureDatabaseCompatibility() {
   await ensureRbacTables();
   await ensureOsGeneratedMeasureTable();
   await ensureMaterialsTable();
+  await ensureMaterialVariantsTable();
   await ensureMaterialMeasureTypesTable();
   await ensureProductionConfigTable();
   await ensureAppPreferencesTable();
@@ -256,6 +258,20 @@ async function ensureMaterialsTable() {
     ALTER TABLE IF EXISTS maestro.materials
     DROP COLUMN IF EXISTS descricao
   `, 'drop maestro.materials.descricao');
+}
+
+async function ensureMaterialVariantsTable() {
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS maestro.material_variants (
+      id          SERIAL PRIMARY KEY,
+      material_id INTEGER NOT NULL REFERENCES maestro.materials(id) ON DELETE CASCADE,
+      nome        TEXT NOT NULL,
+      ativo       BOOLEAN NOT NULL DEFAULT true,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at  TIMESTAMPTZ,
+      UNIQUE (material_id, nome)
+    )
+  `, 'maestro.material_variants');
 }
 
 // Configuração global da produção — valores fixos usados na composição dos
@@ -320,6 +336,7 @@ async function ensureConformityCertificatesTable() {
       numero             TEXT NOT NULL UNIQUE,
       nome_comercial     TEXT NOT NULL,
       material_id        INTEGER NOT NULL REFERENCES maestro.materials(id),
+      material_variant_id INTEGER REFERENCES maestro.material_variants(id),
       quantidade_camadas INTEGER CHECK (quantidade_camadas > 0),
       espessura_mm       NUMERIC(8,3),
       medidas            JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -330,6 +347,11 @@ async function ensureConformityCertificatesTable() {
       updated_at         TIMESTAMPTZ
     )
   `, 'maestro.conformity_certificates');
+
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.conformity_certificates
+    ADD COLUMN IF NOT EXISTS material_variant_id INTEGER REFERENCES maestro.material_variants(id)
+  `, 'maestro.conformity_certificates.material_variant_id');
 
   await runCompatibilityQuery(`
     ALTER TABLE IF EXISTS maestro.conformity_certificates
@@ -632,6 +654,29 @@ async function ensureJiraCardsProducedAt() {
     ALTER TABLE IF EXISTS maestro.jira_cards
     ADD COLUMN IF NOT EXISTS fabrica_manta TEXT;
   `, 'maestro.jira_cards.fabrica_manta');
+
+  // Nº da Nota Fiscal (customfield_10101 no Jira) — usado pra preencher a NF
+  // do certificado de qualidade emitido pelo corte.
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.jira_cards
+    ADD COLUMN IF NOT EXISTS nota_fiscal TEXT;
+  `, 'maestro.jira_cards.nota_fiscal');
+}
+
+async function ensureCuttingRecordsJiraKey() {
+  // Congela o card Jira correspondente ao registro de corte no momento da
+  // gravação. Sem isso, quando o certificado de qualidade é gerado depois, o
+  // card pode já ter saído do kanban e o anexo perde destino. NULL é OK:
+  // legítimo pra cortes produzidos sem card.
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS public.cutting_records
+    ADD COLUMN IF NOT EXISTS jira_key TEXT;
+  `, 'public.cutting_records.jira_key');
+
+  await runCompatibilityQuery(`
+    CREATE INDEX IF NOT EXISTS cutting_records_jira_key_idx
+      ON public.cutting_records (jira_key)
+  `, 'cutting_records_jira_key_idx');
 }
 
 async function ensurePlateSupplierTable() {
@@ -1635,6 +1680,31 @@ async function ensureQualityCertificatesTable() {
     ALTER TABLE IF EXISTS maestro.quality_certificates
     ADD COLUMN IF NOT EXISTS fornecedor_tecido TEXT
   `, 'maestro.quality_certificates.fornecedor_tecido');
+
+  // Vínculo opcional com o cutting_record que originou o cert. Permite
+  // idempotência no fluxo de geração em lote a partir da tela de corte
+  // (UNIQUE parcial — só vale quando preenchido, certs criados manualmente
+  // continuam com NULL e não colidem entre si).
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.quality_certificates
+    ADD COLUMN IF NOT EXISTS cutting_record_id BIGINT
+  `, 'maestro.quality_certificates.cutting_record_id');
+
+  await runCompatibilityQuery(`
+    ALTER TABLE IF EXISTS maestro.quality_certificates
+    ADD COLUMN IF NOT EXISTS order_number TEXT
+  `, 'maestro.quality_certificates.order_number');
+
+  await runCompatibilityQuery(`
+    CREATE UNIQUE INDEX IF NOT EXISTS quality_certificates_cutting_record_uniq
+      ON maestro.quality_certificates (cutting_record_id)
+      WHERE cutting_record_id IS NOT NULL
+  `, 'quality_certificates_cutting_record_uniq');
+
+  await runCompatibilityQuery(`
+    CREATE INDEX IF NOT EXISTS quality_certificates_order_number_idx
+      ON maestro.quality_certificates (order_number)
+  `, 'quality_certificates_order_number_idx');
 }
 
 async function ensureAuditTables() {

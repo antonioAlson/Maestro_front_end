@@ -1,4 +1,5 @@
 import pool from '../config/database.js';
+import { resolveJiraCardForCutting, pickBoardForCutting } from '../services/jiraCardLookup.js';
 
 // Enums espelhados do Spring (cutting/enums/*). Mantém ordem dos values() —
 // o front popula selects com essa ordem.
@@ -84,6 +85,7 @@ const CUTTING_SELECT = `
     cr.material,
     cr.kit_type           AS "kitType",
     cr.seal,
+    cr.jira_key           AS "jiraKey",
     ${CONSUMPTIONS_JSON_SUB}
   FROM public.cutting_records cr
 `;
@@ -99,6 +101,7 @@ function mapCuttingRecord(row) {
     material: row.material,
     kitType: row.kitType,
     seal: row.seal,
+    jiraKey: row.jiraKey ?? null,
     consumptions: (row.consumptions || []).map((c) => ({
       id: c.id == null ? null : Number(c.id),
       usedMetrage: c.usedMetrage == null ? null : Number(c.usedMetrage),
@@ -114,13 +117,85 @@ function mapCuttingRecord(row) {
   };
 }
 
+// Backfill lazy: tenta preencher jira_key dos registros NULL antes do SELECT,
+// limitado por chamada pra não impactar o tempo de resposta. Cards que ainda
+// não foram sincronizados continuam NULL e a próxima chamada tenta de novo.
+// NULL é estado válido (corte produzido sem card no Jira).
+async function backfillJiraKeysLazy(limit = 100) {
+  try {
+    await pool.query(
+      `
+        WITH alvo AS (
+          SELECT id, order_number, material, kit_type
+            FROM public.cutting_records
+           WHERE jira_key IS NULL
+           ORDER BY id DESC
+           LIMIT $1
+        ),
+        match AS (
+          SELECT a.id, jc.key
+            FROM alvo a
+            JOIN maestro.jira_cards jc
+              ON jc.resumo ILIKE '%' || a.order_number || '%'
+             AND (
+               (UPPER(a.material) LIKE 'TENSYLON%' AND jc.key ILIKE 'TENSYLON-%')
+               OR (UPPER(a.material) = 'ARAMIDA' AND jc.key ILIKE 'MANTA-%')
+               OR (UPPER(a.kit_type) = 'KIT_COMUM' AND jc.key ILIKE 'MANTA-%')
+             )
+             AND regexp_replace(jc.resumo, '.*?(\\d{4,10})(?!.*\\d{4,10}).*', '\\1')
+                 = a.order_number
+        )
+        UPDATE public.cutting_records cr
+           SET jira_key = m.key
+          FROM match m
+         WHERE cr.id = m.id
+      `,
+      [Math.max(1, Math.min(500, Number(limit) || 100))],
+    );
+  } catch (err) {
+    // Falha não-fatal: o list deve responder mesmo sem o backfill rodar.
+    console.warn('[Cutting] backfillJiraKeysLazy falhou:', err.message);
+  }
+}
+
 // GET /autoclave is occupied; cutting lives on /cutting (mounted in server.js).
 export const getAllCuttingRecords = async (_req, res) => {
   try {
+    await backfillJiraKeysLazy();
     const { rows } = await pool.query(`${CUTTING_SELECT} ORDER BY cr.id DESC`);
     return res.json(rows.map(mapCuttingRecord));
   } catch (error) {
     console.error('[Cutting] getAll error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// POST /cutting/backfill-jira-keys — backfill explícito (admin/manual).
+// Body: { limit?: number } (default 1000). Retorna contadores antes/depois.
+export const backfillJiraKeys = async (req, res) => {
+  try {
+    const requested = Number(req.body?.limit ?? 1000);
+    const limit = Number.isFinite(requested) ? Math.max(1, Math.min(5000, requested)) : 1000;
+
+    const before = await pool.query(
+      'SELECT COUNT(*)::int AS n FROM public.cutting_records WHERE jira_key IS NULL',
+    );
+    await backfillJiraKeysLazy(limit);
+    const after = await pool.query(
+      'SELECT COUNT(*)::int AS n FROM public.cutting_records WHERE jira_key IS NULL',
+    );
+
+    return res.json({
+      success: true,
+      data: {
+        nullBefore: before.rows[0].n,
+        nullAfter: after.rows[0].n,
+        filled: before.rows[0].n - after.rows[0].n,
+        limit,
+      },
+    });
+  } catch (error) {
+    console.error('[Cutting] backfillJiraKeys error:', error);
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -357,10 +432,19 @@ export const createCuttingRecord = async (req, res) => {
     let prodDate = extractDateOnly(body.productionDate) || todayLocalDateString();
 
     const actor = req.user?.email || req.user?.username || null;
+
+    // Resolve o card Jira antes do INSERT — se o board mapeado (MANTA/TENSYLON)
+    // tem entrada com esta OS, congela o key. NULL é OK: corte sem card é
+    // legítimo, e o backfill lazy do listing tenta de novo depois.
+    const { key: jiraKey } = await resolveJiraCardForCutting(
+      { orderNumber: body.orderNumber, material: body.material, kitType: body.kitType },
+      client,
+    );
+
     const { rows } = await client.query(
       `INSERT INTO public.cutting_records
-        (production_date, order_number, order_description, created_at, created_by, material, kit_type, seal)
-       VALUES ($1, $2, $3, now(), $4, $5, $6, $7)
+        (production_date, order_number, order_description, created_at, created_by, material, kit_type, seal, jira_key)
+       VALUES ($1, $2, $3, now(), $4, $5, $6, $7, $8)
        RETURNING id`,
       [
         prodDate,
@@ -370,6 +454,7 @@ export const createCuttingRecord = async (req, res) => {
         body.material || null,
         body.kitType || null,
         body.seal || null,
+        jiraKey,
       ],
     );
     const recordId = Number(rows[0].id);
@@ -405,7 +490,7 @@ export const updateCuttingRecord = async (req, res) => {
     await client.query('BEGIN');
 
     const exists = await client.query(
-      'SELECT id FROM public.cutting_records WHERE id = $1 FOR UPDATE',
+      'SELECT id, order_number, material, kit_type, jira_key FROM public.cutting_records WHERE id = $1 FOR UPDATE',
       [id],
     );
     if (exists.rows.length === 0) {
@@ -421,6 +506,23 @@ export const updateCuttingRecord = async (req, res) => {
     // preserva o valor atual).
     const prodDate = extractDateOnly(body.productionDate);
 
+    // Recalcula jira_key apenas se OS/material/kit mudaram (preserva o link
+    // congelado se o usuário só editou descrição/data/lacre). Se o link
+    // existente continuar válido, mantemos — evita perder referência ao
+    // anexar o certificado depois.
+    const prev = exists.rows[0];
+    const osChanged = body.orderNumber && body.orderNumber !== prev.order_number;
+    const materialChanged = (body.material || null) !== prev.material;
+    const kitChanged = (body.kitType || null) !== prev.kit_type;
+    let jiraKey = prev.jira_key;
+    if (osChanged || materialChanged || kitChanged) {
+      const resolved = await resolveJiraCardForCutting(
+        { orderNumber: body.orderNumber, material: body.material, kitType: body.kitType },
+        client,
+      );
+      jiraKey = resolved.key;
+    }
+
     await client.query(
       `UPDATE public.cutting_records SET
         production_date   = COALESCE($2, production_date),
@@ -428,7 +530,8 @@ export const updateCuttingRecord = async (req, res) => {
         order_description = $4,
         material          = $5,
         kit_type          = $6,
-        seal              = $7
+        seal              = $7,
+        jira_key          = $8
        WHERE id = $1`,
       [
         id,
@@ -438,6 +541,7 @@ export const updateCuttingRecord = async (req, res) => {
         body.material || null,
         body.kitType || null,
         body.seal || null,
+        jiraKey,
       ],
     );
 

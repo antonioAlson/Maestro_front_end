@@ -12,6 +12,13 @@ import {
   listJiraIssueAttachments,
   transitionJiraIssue,
 } from '../services/jiraService.js';
+import {
+  extractOsFromResumo,
+  normalizeOsNumber,
+  pickBoardForCutting,
+  findMantaCardByOs,
+  findTensylonCardByOs,
+} from '../services/jiraCardLookup.js';
 
 const ROMANEIO_TARGET_STATUS = 'A entregar';
 
@@ -19,19 +26,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const ROMANEIO_LOG_PATH = path.join(__dirname, '..', 'logs', 'cutting-romaneios.jsonl');
 
-function extractOsFromResumo(resumo) {
-  const matches = String(resumo || '').match(/\b(\d{4,10})\b/g);
-  return matches ? matches[matches.length - 1] : '';
-}
-
 function sanitizeText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
-}
-
-function normalizeOsNumber(value) {
-  const text = sanitizeText(value);
-  const matches = text.match(/\b(\d{4,10})\b/g);
-  return matches ? matches[matches.length - 1] : text;
 }
 
 function sanitizeFileName(value) {
@@ -132,41 +128,6 @@ function wrapText(text, font, size, maxWidth) {
   return lines.length ? lines : [''];
 }
 
-async function findJiraCardByOs(osNumber, keyPrefix) {
-  const os = normalizeOsNumber(osNumber);
-
-  if (!os) {
-    return null;
-  }
-
-  const { rows } = await pool.query(
-    `
-      SELECT
-        key,
-        resumo,
-        veiculo,
-        project
-      FROM maestro.jira_cards
-      WHERE key ILIKE $1
-        AND resumo ILIKE $2
-      ORDER BY last_updated_at DESC NULLS LAST
-    `,
-    [`${keyPrefix}-%`, `%${os}%`],
-  );
-
-  return rows.find(
-    (row) => extractOsFromResumo(row.resumo) === os,
-  ) || null;
-}
-
-async function findMantaCardByOs(osNumber) {
-  return findJiraCardByOs(osNumber, 'MANTA');
-}
-
-async function findTensylonCardByOs(osNumber) {
-  return findJiraCardByOs(osNumber, 'TENSYLON');
-}
-
 function isRomaneioAttachment(att, osNumber) {
   const name = String(att?.filename || '').toLowerCase();
   if (!name.endsWith('.pdf')) return false;
@@ -190,18 +151,7 @@ function filterObsoleteRomaneioAttachments(attachments, osNumber) {
   return (attachments || []).filter((a) => isRomaneioAttachment(a, osNumber));
 }
 
-function pickBoardForItem(item) {
-  const material = sanitizeText(item.material).toUpperCase();
-  const kitType = sanitizeText(item.kitType).toUpperCase();
-
-  if (material.startsWith('TENSYLON') || kitType.includes('TENSYLON')) {
-    return 'TENSYLON';
-  }
-  if (material === 'ARAMIDA' || kitType === 'KIT_COMUM') {
-    return 'MANTA';
-  }
-  return null;
-}
+const pickBoardForItem = pickBoardForCutting;
 
 async function enrichItems(items) {
   const enriched = [];

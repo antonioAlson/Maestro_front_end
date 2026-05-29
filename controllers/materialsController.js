@@ -40,7 +40,15 @@ export const listarMateriais = async (req, res) => {
             ORDER BY mt.nome
           ) FILTER (WHERE mt.id IS NOT NULL),
           '[]'::json
-        ) AS medidas
+        ) AS medidas,
+        COALESCE((
+          SELECT json_agg(
+            json_build_object('id', mv.id, 'nome', mv.nome, 'ativo', mv.ativo)
+            ORDER BY mv.nome
+          )
+          FROM maestro.material_variants mv
+          WHERE mv.material_id = m.id
+        ), '[]'::json) AS variacoes
       FROM maestro.materials m
       LEFT JOIN maestro.material_measure_type_map mm ON mm.material_id = m.id
       LEFT JOIN maestro.material_measure_types mt ON mt.id = mm.measure_type_id
@@ -168,6 +176,79 @@ export const excluirMaterial = async (req, res) => {
       });
     }
     console.error('Erro ao excluir material:', error);
+    return res.status(500).json({ success: false, message: `Erro: ${error.message}` });
+  }
+};
+
+export const criarVariacaoMaterial = async (req, res) => {
+  try {
+    const materialId = Number(req.params.materialId);
+    const nome = String(req.body?.nome || '').trim();
+    if (!Number.isFinite(materialId)) return res.status(400).json({ success: false, message: 'Material inválido.' });
+    if (!nome) return res.status(400).json({ success: false, message: 'Nome da variação é obrigatório.' });
+
+    const result = await pool.query(
+      `INSERT INTO maestro.material_variants (material_id, nome)
+       VALUES ($1, $2)
+       RETURNING id, material_id, nome, ativo, created_at, updated_at`,
+      [materialId, nome],
+    );
+    return res.status(201).json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ success: false, message: 'Já existe uma variação com esse nome para este material.' });
+    if (error.code === '23503') return res.status(400).json({ success: false, message: 'Material inexistente.' });
+    console.error('Erro ao criar variaÃ§Ã£o de material:', error);
+    return res.status(500).json({ success: false, message: `Erro: ${error.message}` });
+  }
+};
+
+export const atualizarVariacaoMaterial = async (req, res) => {
+  try {
+    const materialId = Number(req.params.materialId);
+    const variantId = Number(req.params.variantId);
+    const fields = {};
+    if (req.body?.nome !== undefined) fields.nome = String(req.body.nome).trim();
+    if (req.body?.ativo !== undefined) fields.ativo = !!req.body.ativo;
+    if (fields.nome === '') return res.status(400).json({ success: false, message: 'Nome da variação não pode ser vazio.' });
+    if (!Number.isFinite(materialId) || !Number.isFinite(variantId)) return res.status(400).json({ success: false, message: 'Variação inválida.' });
+    if (Object.keys(fields).length === 0) return res.status(400).json({ success: false, message: 'Nenhum campo para atualizar.' });
+
+    const keys = Object.keys(fields);
+    const values = Object.values(fields);
+    const setClauses = keys.map((k, i) => `${k} = $${i + 1}`).join(', ');
+    values.push(materialId, variantId);
+
+    const result = await pool.query(
+      `UPDATE maestro.material_variants
+          SET ${setClauses}, updated_at = now()
+        WHERE material_id = $${values.length - 1} AND id = $${values.length}
+        RETURNING id, material_id, nome, ativo, created_at, updated_at`,
+      values,
+    );
+    if (result.rows.length === 0) return res.status(404).json({ success: false, message: 'Variação não encontrada.' });
+    return res.status(200).json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ success: false, message: 'Já existe uma variação com esse nome para este material.' });
+    console.error('Erro ao atualizar variaÃ§Ã£o de material:', error);
+    return res.status(500).json({ success: false, message: `Erro: ${error.message}` });
+  }
+};
+
+export const excluirVariacaoMaterial = async (req, res) => {
+  try {
+    const materialId = Number(req.params.materialId);
+    const variantId = Number(req.params.variantId);
+    const result = await pool.query(
+      'DELETE FROM maestro.material_variants WHERE material_id = $1 AND id = $2 RETURNING id',
+      [materialId, variantId],
+    );
+    if (result.rows.length === 0) return res.status(404).json({ success: false, message: 'Variação não encontrada.' });
+    return res.status(200).json({ success: true, message: 'Variação excluída.' });
+  } catch (error) {
+    if (error.code === '23503') {
+      return res.status(409).json({ success: false, message: 'Variação está em uso por certificados. Desative em vez de excluir.' });
+    }
+    console.error('Erro ao excluir variaÃ§Ã£o de material:', error);
     return res.status(500).json({ success: false, message: `Erro: ${error.message}` });
   }
 };

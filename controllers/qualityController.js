@@ -2,9 +2,22 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import JSZip from 'jszip';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
 import { query } from '../config/database.js';
+import { resolveJiraCardForCutting } from '../services/jiraCardLookup.js';
+import {
+  resolveMetragemFromMirror,
+  resolveConformityCertsFromPlates,
+  getSquareMetersForCert,
+  gerarProximoNumero,
+} from '../services/qualityCertificateBuilder.js';
+import {
+  attachToJiraIssue,
+  deleteJiraAttachment,
+  listJiraIssueAttachments,
+} from '../services/jiraService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -396,6 +409,12 @@ async function buildCertificatePdf(cert) {
     StandardFonts.Helvetica
   );
 
+  // Serif (Times) usada na assinatura / texto sob a linha — equivalente
+  // ao "LiberationSerif" do modelo de referência.
+  const fontSerif = await doc.embedFont(
+    StandardFonts.TimesRoman
+  );
+
   const sacramentoPath = path.join(
     __dirname,
     '..',
@@ -597,6 +616,59 @@ async function buildCertificatePdf(cert) {
     return y;
   };
 
+  // Versão com runs (texto + fonte [+ tamanho]) — permite bold inline e mistura
+  // de tamanhos no meio do parágrafo. `runs`: [{ text, font, size? }]. Quebra
+  // de linha greedy por palavra preservando fonte e tamanho de cada token; a
+  // altura da linha respeita o maior tamanho usado dentro dela.
+  const drawRichWrapped = (runs, startY, defaultSize, maxWidth) => {
+    const words = [];
+    for (const run of runs) {
+      const parts = run.text.split(/\s+/);
+      const runSize = run.size || defaultSize;
+      for (const part of parts) {
+        if (part) words.push({ text: part, font: run.font, size: runSize });
+      }
+    }
+
+    let y = startY;
+    let lineWords = [];
+    let lineWidth = 0;
+
+    const flushLine = () => {
+      const lineMax = lineWords.reduce((m, w) => Math.max(m, w.size), defaultSize);
+      let x = ml;
+      for (let i = 0; i < lineWords.length; i++) {
+        const w = lineWords[i];
+        page.drawText(w.text, { x, y, size: w.size, font: w.font, color: dark });
+        x += w.font.widthOfTextAtSize(w.text, w.size);
+        if (i < lineWords.length - 1) {
+          x += w.font.widthOfTextAtSize(' ', w.size);
+        }
+      }
+      y -= lineMax + 4;
+      lineWords = [];
+      lineWidth = 0;
+    };
+
+    for (const w of words) {
+      const wWidth = w.font.widthOfTextAtSize(w.text, w.size);
+      const sepWidth = lineWords.length > 0
+        ? lineWords[lineWords.length - 1].font.widthOfTextAtSize(' ', lineWords[lineWords.length - 1].size)
+        : 0;
+      if (lineWidth + sepWidth + wWidth > maxWidth && lineWords.length > 0) {
+        flushLine();
+        lineWords.push(w);
+        lineWidth = wWidth;
+      } else {
+        lineWords.push(w);
+        lineWidth += sepWidth + wWidth;
+      }
+    }
+    if (lineWords.length > 0) flushLine();
+
+    return y;
+  };
+
   // ──────────────────────────────────────────────────────────────────────────
   // LAYOUT
   // ──────────────────────────────────────────────────────────────────────────
@@ -612,8 +684,7 @@ async function buildCertificatePdf(cert) {
   const headerTop = height - 42;
 
   let operaLogoHeight = 0;
-
-  let kevlarBottomY = headerTop;
+  let operaLogoRight = ml;
 
   // OPERA
 
@@ -633,6 +704,7 @@ async function buildCertificatePdf(cert) {
         logoW;
 
       operaLogoHeight = logoH;
+      operaLogoRight = ml + logoW;
 
       page.drawImage(logoImg, {
         x: ml,
@@ -649,57 +721,14 @@ async function buildCertificatePdf(cert) {
     }
   }
 
-  // KEVLAR
-
-  if (fs.existsSync(kevlarLogoPath)) {
-    try {
-      const kevlarImg =
-        await embedImage(
-          kevlarLogoPath
-        );
-
-      const kevlarDim =
-        kevlarImg.scale(1);
-
-      const kevlarW = 105;
-
-      const kevlarH =
-        (kevlarDim.height /
-          kevlarDim.width) *
-        kevlarW;
-
-      kevlarBottomY =
-        headerTop - kevlarH;
-
-      page.drawImage(kevlarImg, {
-        x: width - ml - kevlarW,
-        y: kevlarBottomY,
-        width: kevlarW,
-        height: kevlarH,
-      });
-
-    } catch (err) {
-      console.error(
-        'Erro logo Kevlar:',
-        err
-      );
-    }
-  }
-
   // ──────────────────────────────────────────────────────────────────────────
-  // TITLE
+  // TITLE — alinhado horizontalmente com a logo Ópera (mesma linha do header).
   // ──────────────────────────────────────────────────────────────────────────
-
-  const titleBaseY =
-    Math.min(
-      headerTop - operaLogoHeight,
-      kevlarBottomY
-    ) - 25;
 
   const title =
     `CERTIFICADO DE QUALIDADE Nº ${cert.numero || ''}`;
 
-  const titleSize = 18;
+  const titleSize = 24;
 
   const titleW =
     fontBold.widthOfTextAtSize(
@@ -707,9 +736,20 @@ async function buildCertificatePdf(cert) {
       titleSize
     );
 
+  // Baseline centralizado verticalmente com a logo.
+  const titleY = headerTop - (operaLogoHeight / 2) - (titleSize / 3);
+
+  // Centralizado no espaço à direita da logo (entre logoRight+gap e margem direita),
+  // pra não sobrepor a imagem da Ópera quando o título cresce a 24pt.
+  const titleGap = 16;
+  const titleZoneLeft = operaLogoRight + titleGap;
+  const titleZoneRight = width - ml;
+  let titleX = titleZoneLeft + ((titleZoneRight - titleZoneLeft) - titleW) / 2;
+  if (titleX < titleZoneLeft) titleX = titleZoneLeft;
+
   page.drawText(title, {
-    x: (width - titleW) / 2,
-    y: titleBaseY,
+    x: titleX,
+    y: titleY,
     size: titleSize,
     font: fontBold,
     color: dark,
@@ -719,11 +759,11 @@ async function buildCertificatePdf(cert) {
   // FIELDS (coluna única, alinhada à esquerda)
   // ──────────────────────────────────────────────────────────────────────────
 
-  const fieldY0 = titleBaseY - 32;
+  const fieldY0 = (headerTop - operaLogoHeight) - 32;
 
-  const labelSize = 10;
+  const labelSize = 12;
 
-  const rowGap = 13;
+  const rowGap = 16;
 
   const produtos = Array.isArray(
     cert.produtos
@@ -731,13 +771,30 @@ async function buildCertificatePdf(cert) {
     ? cert.produtos
     : [];
 
-  const produtoNomes = produtos
-    .map(p => p.nome)
-    .join('; ');
-
   const produtoQtds = produtos
     .map(p => p.quantidade_m2)
     .join('; ');
+
+  // "Produto Ópera" = nome_comercial do(s) Cert. de Conformidade resolvido(s)
+  // pelo par fornecedor+camadas. Mantém a mesma ordem de `certificados_conformidade`
+  // (e, por consequência, de `produtos[].quantidade_m2`) — não deduplica aqui.
+  const conformidadeCerts = Array.isArray(cert.certificados_conformidade)
+    ? cert.certificados_conformidade.filter(Boolean)
+    : [];
+
+  let produtoNomes = '';
+  if (conformidadeCerts.length > 0) {
+    const { rows: ccRows } = await query(
+      `SELECT numero, nome_comercial
+         FROM maestro.conformity_certificates
+        WHERE numero = ANY($1::text[])`,
+      [conformidadeCerts],
+    );
+    const byNumero = new Map(ccRows.map(r => [r.numero, r.nome_comercial]));
+    produtoNomes = conformidadeCerts
+      .map(numero => (byNumero.get(numero) || '').trim() || numero)
+      .join('; ');
+  }
 
   const dataEmissao = cert.data_emissao
     ? new Date(
@@ -751,54 +808,16 @@ async function buildCertificatePdf(cert) {
       )
     : '';
 
+  // Valores em fonte regular; labels (negrito) renderizados separadamente.
   const fields = [
-    [
-      'Certificado:',
-      cert.certificado || '',
-      false,
-    ],
-
-    [
-      'Painéis Balísticos:',
-      cert.paineis_balisticos || '',
-      false,
-    ],
-
-    [
-      'Produto Ópera:',
-      produtoNomes,
-      false,
-    ],
-
-    [
-      'Quantidade (m²):',
-      produtoQtds,
-      false,
-    ],
-
-    [
-      'Nota Fiscal:',
-      cert.nota_fiscal || '',
-      true,
-    ],
-
-    [
-      'Veículo:',
-      cert.veiculo || '',
-      true,
-    ],
-
-    [
-      'Fornecedor de Tecido:',
-      cert.fornecedor_tecido || '',
-      false,
-    ],
-
-    [
-      'Data de Emissão:',
-      dataEmissao,
-      false,
-    ],
+    ['Nº Certificado:',    cert.numero || '',             false],
+    ['OS:',                cert.order_number || '',       false],
+    ['Painéis Balísticos:', cert.paineis_balisticos || '', false],
+    ['Produto Ópera:',     produtoNomes,                  false],
+    ['Quantidade (m²):',   produtoQtds,                   false],
+    ['Nota Fiscal:',       cert.nota_fiscal || '',        false],
+    ['Veículo:',           cert.veiculo || '',            false],
+    ['Data de Emissão:',   dataEmissao,                   false],
   ];
 
   const valueX = ml + 140;
@@ -839,29 +858,19 @@ async function buildCertificatePdf(cert) {
   // BODY
   // ──────────────────────────────────────────────────────────────────────────
 
-  const material =
-    cert.material ||
-    'Dupont Kevlar® S745GR';
+  const bodySize = 12;
 
-  const nivel =
-    cert.nivel || 'III-A';
+  // Runs com bold inline: "Ópera Armouring Materials" em 14pt (nome da empresa)
+  // e "nível III-A da norma ABNT NBR 15000:2020-2" em 12pt bold.
+  const para1Runs = [
+    { text: 'A ', font },
+    { text: 'Ópera Armouring Materials', font: fontBold, size: 14 },
+    { text: ' certifica que o produto acima especificado encontra-se em conformidade com o ', font },
+    { text: 'nível III-A da norma ABNT NBR 15000:2020-2', font: fontBold },
+    { text: '.', font },
+  ];
 
-  const norma =
-    cert.norma ||
-    'ABNT NBR 15000:2020-2';
-
-  const bodySize = 9.5;
-
-  const para1 =
-    `A Ópera Armouring Materials certifica que o produto acima especificado foi produzido com o tecido de para-aramida ${material} e encontra-se em conformidade com o nível ${nivel} da norma ${norma}.`;
-
-  fy = drawWrapped(
-    para1,
-    font,
-    fy,
-    bodySize,
-    contentWidth
-  );
+  fy = drawRichWrapped(para1Runs, fy, bodySize, contentWidth);
 
   const certs = Array.isArray(
     cert.certificados_conformidade
@@ -991,24 +1000,37 @@ async function buildCertificatePdf(cert) {
   const sigText =
     'Coordenador de Qualidade';
 
-  const sigTextSize = 10;
+  const sigTextSize = 12;
 
   page.drawText(sigText, {
     x:
       width / 2 -
-      font.widthOfTextAtSize(
+      fontSerif.widthOfTextAtSize(
         sigText,
         sigTextSize
       ) /
         2,
 
-    y: sigLineY - 14,
+    y: sigLineY - 16,
 
     size: sigTextSize,
 
-    font,
+    font: fontSerif,
 
     color: dark,
+  });
+
+  // Identificação do formulário + nº do cert., centralizado horizontalmente,
+  // próximo ao rodapé (alinhado verticalmente com a última linha do footer text).
+  const foLabel = `FO 51 rev1${cert.numero ? ` - ${cert.numero}` : ''}`;
+  const foSize = 7;
+  const foW = font.widthOfTextAtSize(foLabel, foSize);
+  page.drawText(foLabel, {
+    x: (width - foW) / 2,
+    y: 18,
+    size: foSize,
+    font,
+    color: gray,
   });
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -1073,15 +1095,366 @@ async function buildCertificatePdf(cert) {
 
       y: footerY,
 
-      size: 7,
+      size: 8,
 
       font,
 
       color: gray,
     });
 
-    footerY -= 10;
+    footerY -= 11;
   }
 
   return doc.save();
 }
+
+// ─── GET /api/quality/by-cutting ──────────────────────────────────────────────
+// Lista certs já emitidos a partir de cutting_records (cutting_record_id NOT NULL),
+// no shape { osNumber, certNumero, certId, jiraKey, createdAt }. Usado pelo
+// front de corte pra marcar OS já com cert + decidir overwrite/reuse.
+export const listarCertsPorCorte = async (_req, res) => {
+  try {
+    const { rows } = await query(
+      `
+        SELECT
+          qc.id            AS cert_id,
+          qc.numero        AS cert_numero,
+          qc.order_number  AS os_number,
+          qc.cutting_record_id,
+          cr.jira_key      AS jira_key,
+          qc.created_at,
+          qc.updated_at
+        FROM maestro.quality_certificates qc
+        JOIN public.cutting_records cr ON cr.id = qc.cutting_record_id
+        WHERE qc.cutting_record_id IS NOT NULL
+        ORDER BY qc.created_at DESC
+      `,
+    );
+    return res.json({
+      success: true,
+      data: rows.map((r) => ({
+        certId: Number(r.cert_id),
+        certNumero: r.cert_numero,
+        osNumber: r.os_number,
+        cuttingRecordId: Number(r.cutting_record_id),
+        jiraKey: r.jira_key ?? null,
+        createdAt: r.created_at,
+        updatedAt: r.updated_at,
+      })),
+    });
+  } catch (err) {
+    console.error('[Quality] listarCertsPorCorte error:', err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// Anexos cuja substituição é segura ao reemitir o cert para o mesmo card.
+function isQualityCertAttachment(att, certNumero) {
+  const name = String(att?.filename || '').toLowerCase();
+  if (!name.endsWith('.pdf')) return false;
+  if (!name.startsWith('certificado-qualidade')) return false;
+  if (!certNumero) return true;
+  return name.includes(String(certNumero).toLowerCase());
+}
+
+// ─── POST /api/quality/from-cutting ───────────────────────────────────────────
+// Body: { deliveryDate?, items: [{ cuttingRecordId, mode: 'new'|'overwrite' }] }
+//
+// Para cada cutting_record:
+//   1. Carrega registro + consumos (com plate_id) + jira_key congelado.
+//   2. Resolve metragem via cutting_plan do projeto do Jira (mesma fonte do
+//      espelho). Fallback: warning, segue com total 0.
+//   3. Resolve certs. de conformidade via placas usadas (workorder.fabric_supplier
+//      + camadas + variante Tensylon). Consumos externos caem no padrão antigo.
+//   4. UPSERT em maestro.quality_certificates (UNIQUE em cutting_record_id).
+//      mode='overwrite' atualiza row existente; 'new' falha em 409 se já existir.
+//   5. Gera PDF + anexa no card Jira (se houver jira_key). Sem transition.
+//   6. Devolve ZIP de PDFs + relatório.
+export const gerarCertificadosCorte = async (req, res) => {
+  try {
+    const deliveryDate = String(req.body?.deliveryDate || '').slice(0, 10) || null;
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (items.length === 0) {
+      return res.status(400).json({ success: false, message: 'Selecione ao menos um registro de corte.' });
+    }
+
+    const userId = req.user?.id || req.user?.userId || null;
+    const zip = new JSZip();
+    const failures = [];
+    const successes = [];
+
+    for (const rawItem of items) {
+      const cuttingRecordId = Number(rawItem?.cuttingRecordId);
+      const mode = String(rawItem?.mode || 'new').toLowerCase();
+      const fallbackName = Number.isFinite(cuttingRecordId) ? `corte-${cuttingRecordId}` : 'corte-?';
+
+      try {
+        if (!Number.isFinite(cuttingRecordId)) {
+          throw new Error('cuttingRecordId inválido.');
+        }
+
+        // 1. Carrega corte + consumos (subset suficiente pro builder).
+        const crResult = await query(
+          `
+            SELECT
+              cr.id, cr.order_number, cr.order_description, cr.material,
+              cr.kit_type, cr.jira_key,
+              COALESCE((
+                SELECT json_agg(json_build_object(
+                  'id',             pc.id,
+                  'supplier',       pc.supplier,
+                  'layerQuantity',  pc.layer_quantity,
+                  'usedMetrage',    pc.used_metrage::float8,
+                  'plateId',        pc.plate_id,
+                  'batchNumber',    pc.batch_number
+                ) ORDER BY pc.id)
+                FROM public.plate_consumptions pc
+                WHERE pc.cutting_record_id = cr.id
+              ), '[]'::json) AS consumptions
+            FROM public.cutting_records cr
+            WHERE cr.id = $1
+          `,
+          [cuttingRecordId],
+        );
+        if (crResult.rows.length === 0) {
+          throw new Error(`Cutting record ${cuttingRecordId} não encontrado.`);
+        }
+        const cuttingRecord = {
+          id: Number(crResult.rows[0].id),
+          orderNumber: crResult.rows[0].order_number,
+          orderDescription: crResult.rows[0].order_description,
+          material: crResult.rows[0].material,
+          kitType: crResult.rows[0].kit_type,
+          jiraKey: crResult.rows[0].jira_key,
+          consumptions: crResult.rows[0].consumptions || [],
+        };
+
+        // Idempotência: se já existe cert pro cutting_record, exige 'overwrite'.
+        const existing = await query(
+          'SELECT id, numero FROM maestro.quality_certificates WHERE cutting_record_id = $1',
+          [cuttingRecordId],
+        );
+        const existingCert = existing.rows[0] || null;
+        if (existingCert && mode !== 'overwrite') {
+          throw Object.assign(new Error(
+            `Já existe cert. ${existingCert.numero} para este corte. Use mode=overwrite para substituir.`,
+          ), { code: 'CERT_EXISTS', certNumero: existingCert.numero });
+        }
+
+        // 2. Card Jira — usa o congelado e, se NULL, tenta lookup fresco (pode
+        // ter sido sincronizado depois do apontamento). Continua sem anexar se
+        // ainda NULL.
+        let jiraKey = cuttingRecord.jiraKey;
+        let jiraCard = null;
+        const resolved = await resolveJiraCardForCutting({
+          orderNumber: cuttingRecord.orderNumber,
+          material: cuttingRecord.material,
+          kitType: cuttingRecord.kitType,
+        });
+        if (resolved.card) {
+          jiraCard = resolved.card;
+          if (!jiraKey) {
+            jiraKey = resolved.key;
+            await query(
+              'UPDATE public.cutting_records SET jira_key = $1 WHERE id = $2',
+              [jiraKey, cuttingRecordId],
+            );
+          }
+        }
+
+        // 3. Metragem do espelho.
+        const metragem = await resolveMetragemFromMirror(jiraCard, cuttingRecord);
+
+        // 4. Certificados de conformidade pelas placas usadas.
+        const conformidade = await resolveConformityCertsFromPlates(cuttingRecord);
+
+        const fornecedorTecido = conformidade.fabricSuppliers[0] || '';
+        const warnings = [...metragem.warnings, ...conformidade.warnings];
+        if (conformidade.fabricSuppliers.length > 1) {
+          warnings.push(`Múltiplos fornecedores de tecido no corte (${conformidade.fabricSuppliers.join(', ')}). Foi usado o primeiro.`);
+        }
+
+        const totalM2Str = metragem.total > 0
+          ? Number(metragem.total).toFixed(3).replace('.', ',')
+          : '';
+
+        // Um item de `produtos` por cert. de conformidade, na mesma ordem de
+        // `conformidade.numeros` — alimenta a coluna "Quantidade (m²)" do PDF.
+        const fmtM2 = (v) => (v != null && v > 0 ? Number(v).toFixed(3).replace('.', ',') : '');
+        const produtosJson = (conformidade.perCert || []).map((c) => {
+          const m2 = getSquareMetersForCert(c, metragem.perLayer, cuttingRecord.material);
+          if (m2 == null) {
+            warnings.push(`Sem m² no espelho para cert ${c.numero} (${c.camadas} camadas) — campo ficará vazio.`);
+          }
+          return { quantidade_m2: fmtM2(m2) };
+        });
+        // Fallback: nenhum cert resolvido → mantém comportamento antigo (single line com total).
+        const produtosToPersist = produtosJson.length > 0
+          ? produtosJson
+          : [{ nome: cuttingRecord.orderDescription || cuttingRecord.orderNumber, quantidade_m2: totalM2Str }];
+
+        // Nº NF vem do customfield_10101 do card Jira (sincronizado em maestro.jira_cards).
+        const notaFiscalFromJira = String(jiraCard?.nota_fiscal || '').trim();
+        if (!notaFiscalFromJira) {
+          warnings.push('Card Jira sem Nº da Nota Fiscal (customfield_10101) preenchido — campo NF do certificado ficará vazio.');
+        }
+
+        // 5. UPSERT do quality_certificate.
+        let certRow;
+        if (existingCert) {
+          const upd = await query(
+            `UPDATE maestro.quality_certificates SET
+                paineis_balisticos        = $1,
+                produtos                  = $2,
+                veiculo                   = $3,
+                data_emissao              = $4,
+                certificados_conformidade = $5,
+                fornecedor_tecido         = $6,
+                order_number              = $7,
+                nota_fiscal               = $8,
+                updated_at                = now()
+              WHERE id = $9
+              RETURNING *`,
+            [
+              'Ópera Armouring Materials',
+              JSON.stringify(produtosToPersist),
+              cuttingRecord.orderDescription || '',
+              deliveryDate || new Date().toISOString().slice(0, 10),
+              JSON.stringify(conformidade.numeros),
+              fornecedorTecido,
+              cuttingRecord.orderNumber,
+              notaFiscalFromJira,
+              existingCert.id,
+            ],
+          );
+          certRow = upd.rows[0];
+        } else {
+          // Retry curto pra race no numero sequencial (UNIQUE em numero).
+          let inserted = null;
+          let lastErr = null;
+          for (let attempt = 0; attempt < 3 && !inserted; attempt++) {
+            const numero = await gerarProximoNumero();
+            try {
+              const ins = await query(
+                `INSERT INTO maestro.quality_certificates
+                   (numero, certificado, paineis_balisticos, produtos, nota_fiscal,
+                    veiculo, data_emissao, material, norma, nivel,
+                    certificados_conformidade, garantia_anos, fornecedor_tecido,
+                    cutting_record_id, order_number, created_by)
+                 VALUES ($1, '', $2, $3, $4, $5, $6, $7, $8, $9, $10, 5, $11, $12, $13, $14)
+                 RETURNING *`,
+                [
+                  numero,
+                  'Ópera Armouring Materials',
+                  JSON.stringify(produtosToPersist),
+                  notaFiscalFromJira,
+                  cuttingRecord.orderDescription || '',
+                  deliveryDate || new Date().toISOString().slice(0, 10),
+                  'Dupont Kevlar® S745GR',
+                  'ABNT NBR 15000:2020-2',
+                  'III-A',
+                  JSON.stringify(conformidade.numeros),
+                  fornecedorTecido,
+                  cuttingRecordId,
+                  cuttingRecord.orderNumber,
+                  userId,
+                ],
+              );
+              inserted = ins.rows[0];
+            } catch (err) {
+              lastErr = err;
+              if (err.code !== '23505') throw err;
+              // Conflito: tenta de novo com próximo numero.
+            }
+          }
+          if (!inserted) throw lastErr || new Error('Falha ao alocar numero do certificado.');
+          certRow = inserted;
+        }
+
+        // 6. Builda PDF e anexa no Jira.
+        const pdfRow = await query(
+          `SELECT c.*, u.name AS coordenador_nome
+             FROM maestro.quality_certificates c
+             LEFT JOIN maestro.users u ON u.id = c.created_by
+            WHERE c.id = $1`,
+          [certRow.id],
+        );
+        const pdfBytes = await buildCertificatePdf(pdfRow.rows[0]);
+        const pdfBuffer = Buffer.from(pdfBytes);
+        const fileName = `certificado-qualidade-${certRow.numero}.pdf`;
+        zip.file(fileName, pdfBuffer);
+
+        let attachmentAction = 'skipped:no-jira-key';
+        if (jiraKey && userId) {
+          try {
+            const attachments = await listJiraIssueAttachments(userId, jiraKey);
+            const obsolete = attachments.filter((a) => isQualityCertAttachment(a, certRow.numero));
+            for (const att of obsolete) {
+              try { await deleteJiraAttachment(userId, att.id); } catch (delErr) {
+                console.warn(`[Quality] falha ao remover ${att.id} de ${jiraKey}: ${delErr.message}`);
+              }
+            }
+            await attachToJiraIssue(userId, jiraKey, fileName, pdfBuffer);
+            attachmentAction = obsolete.length > 0 ? 'replaced' : 'attached';
+          } catch (jiraErr) {
+            console.warn(`[Quality] anexar em ${jiraKey} falhou: ${jiraErr.message}`);
+            attachmentAction = `error:${jiraErr.message}`;
+            warnings.push(`Anexar no card ${jiraKey} falhou: ${jiraErr.message}`);
+          }
+        }
+
+        successes.push({
+          cuttingRecordId,
+          osNumber: cuttingRecord.orderNumber,
+          certId: Number(certRow.id),
+          certNumero: certRow.numero,
+          jiraKey: jiraKey || null,
+          attachmentAction,
+          warnings,
+        });
+      } catch (err) {
+        failures.push({
+          cuttingRecordId: Number.isFinite(cuttingRecordId) ? cuttingRecordId : null,
+          name: fallbackName,
+          message: err.message,
+          code: err.code || null,
+          certNumero: err.certNumero || null,
+        });
+      }
+    }
+
+    if (successes.length === 0) {
+      return res.status(409).json({
+        success: false,
+        message: 'Nenhum certificado foi gerado.',
+        failures,
+      });
+    }
+
+    if (failures.length > 0) {
+      const report = [
+        'Falhas ao gerar certificados de qualidade',
+        `Data/hora: ${new Date().toLocaleString('pt-BR')}`,
+        '',
+        ...failures.map((f) => `Corte ${f.name}: ${f.message}`),
+      ];
+      zip.file('CERT_LOG.txt', report.join('\n'));
+    }
+
+    const zipBuffer = await zip.generateAsync({
+      type: 'nodebuffer',
+      compression: 'DEFLATE',
+      compressionOptions: { level: 6 },
+    });
+
+    const fileDate = (deliveryDate || new Date().toISOString().slice(0, 10)).replace(/[^0-9-]/g, '');
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="certificados-qualidade-${fileDate || Date.now()}.zip"`);
+    res.setHeader('X-Cert-Failures', String(failures.length));
+    res.setHeader('X-Cert-Successes', String(successes.length));
+    return res.send(zipBuffer);
+  } catch (err) {
+    console.error('[Quality] gerarCertificadosCorte error:', err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
