@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Folha de etiquetas de rastreabilidade baseada no modelo 11_camadas.pdf. -->
+<jasperReport xmlns="http://jasperreports.sourceforge.net/jasperreports"
+              xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+              xsi:schemaLocation="http://jasperreports.sourceforge.net/jasperreports http://jasperreports.sourceforge.net/xsd/jasperreport.xsd"
+              name="rastreabilidade_etiquetas"
+              pageWidth="4252"
+              pageHeight="1498"
+              orientation="Landscape"
+              columnWidth="4252"
+              leftMargin="0"
+              rightMargin="0"
+              topMargin="0"
+              bottomMargin="0"
+              uuid="84e38f63-7423-4117-9280-cbe94c22a1a0">
+  <property name="com.jaspersoft.studio.unit." value="pixel"/>
+  <field name="line1" class="java.lang.String"/>
+  <field name="line2" class="java.lang.String"/>
+  <field name="line3" class="java.lang.String"/>
+  <field name="line4" class="java.lang.String"/>
+  <field name="line5" class="java.lang.String"/>
+  <detail>
+    <band height="1498" splitType="Prevent">
+      <textField>
+        <reportElement x="95" y="0" width="220" height="111" uuid="c469e70d-38ff-453d-ad53-a6bfe766e101"/>
+        <textElement textAlignment="Center" verticalAlignment="Middle"><font fontName="SansSerif" size="20" isBold="true"/></textElement>
+        <textFieldExpression><![CDATA[$F{line1} + "\n" + $F{line2} + "\n" + $F{line3} + "\n" + $F{line4} + "\n" + $F{line5}]]></textFieldExpression>
+      </textField>
+      <textField>
+        <reportElement x="853" y="0" width="219" height="111" uuid="8a69bb12-1e65-4ac2-aa42-8f15d0a3658b"/>
+        <textElement textAlignment="Center" verticalAlignment="Middle"><font fontName="SansSerif" size="20" isBold="true"/></textElement>
+        <textFieldExpression><![CDATA[$F{line1} + "\n" + $F{line2} + "\n" + $F{line3} + "\n" + $F{line4} + "\n" + $F{line5}]]></textFieldExpression>
+      </textField>
+      <textField>
+        <reportElement x="1613" y="0" width="219" height="111" uuid="497850c2-3b3e-4d1e-a104-201ef37d905c"/>
+        <textElement textAlignment="Center" verticalAlignment="Middle"><font fontName="SansSerif" size="20" isBold="true"/></textElement>
+        <textFieldExpression><![CDATA[$F{line1} + "\n" + $F{line2} + "\n" + $F{line3} + "\n" + $F{line4} + "\n" + $F{line5}]]></textFieldExpression>
+      </textField>
+      <textField>
+        <reportElement x="2373" y="0" width="219" height="111" uuid="166984fc-0266-447c-85c0-368169c2cab8"/>
+        <textElement textAlignment="Center" verticalAlignment="Middle"><font fontName="SansSerif" size="20" isBold="true"/></textElement>
+        <textFieldExpression><![CDATA[$F{line1} + "\n" + $F{line2} + "\n" + $F{line3} + "\n" + $F{line4} + "\n" + $F{line5}]]></textFieldExpression>
+      </textField>
+      <textField>
+        <reportElement x="3134" y="0" width="220" height="111" uuid="6fccf3be-a432-492f-9d4c-cea9a30297da"/>
+        <textElement textAlignment="Center" verticalAlignment="Middle"><font fontName="SansSerif" size="20" isBold="true"/></textElement>
+        <textFieldExpression><![CDATA[$F{line1} + "\n" + $F{line2} + "\n" + $F{line3} + "\n" + $F{line4} + "\n" + $F{line5}]]></textFieldExpression>
+      </textField>
+      <textField>
+        <reportElement x="3895" y="0" width="219" height="111" uuid="b0f0f71b-6128-4628-b76f-d547fc57cb15"/>
+        <textElement textAlignment="Center" verticalAlignment="Middle"><font fontName="SansSerif" size="20" isBold="true"/></textElement>
+        <textFieldExpression><![CDATA[$F{line1} + "\n" + $F{line2} + "\n" + $F{line3} + "\n" + $F{line4} + "\n" + $F{line5}]]></textFieldExpression>
+      </textField>
+
+      <textField>
+        <reportElement x="463" y="633" width="220" height="123" uuid="0d51b25f-046b-4825-a492-540d7309d2cf"/>
+        <textElement textAlignment="Center" verticalAlignment="Middle" rotation="UpsideDown"><font fontName="SansSerif" size="20" isBold="true"/></textElement>
+        <textFieldExpression><![CDATA[$F{line1} + "\n" + $F{line2} + "\n" + $F{line3} + "\n" + $F{line4} + "\n" + $F{line5}]]></textFieldExpression>
+      </textField>
+      <textField>
+        <reportElement x="1225" y="633" width="219" height="123" uuid="2681bf80-6a70-4230-8e10-c5070da8439b"/>
+        <textElement textAlignment="Center" verticalAlignment="Middle" rotation="UpsideDown"><font fontName="SansSerif" size="20" isBold="true"/></textElement>
+        <textFieldExpression><![CDATA[$F{line1} + "\n" + $F{line2} + "\n" + $F{line3} + "\n" + $F{line4} + "\n" + $F{line5}]]></textFieldExpression>
+      </textField>
+      <textField>
+        <reportElement x="1985" y="633" width="219" height="123" uuid="0f2ca206-1979-4b05-a174-8c0838a7ae91"/>
+        <textElement textAlignment="Center" verticalAlignment="Middle" rotation="UpsideDown"><font fontName="SansSerif" size="20" isBold="true"/></textElement>
+        <textFieldExpression><![CDATA[$F{line1} + "\n" + $F{line2} + "\n" + $F{line3} + "\n" + $F{line4} + "\n" + $F{line5}]]></textFieldExpression>
+      </textField>
+      <textField>
+        <reportElement x="2745" y="633" width="219" height="123" uuid="e6963bc5-df75-4c74-8e17-594a95f9b763"/>
+        <textElement textAlignment="Center" verticalAlignment="Middle" rotation="UpsideDown"><font fontName="SansSerif" size="20" isBold="true"/></textElement>
+        <textFieldExpression><![CDATA[$F{line1} + "\n" + $F{line2} + "\n" + $F{line3} + "\n" + $F{line4} + "\n" + $F{line5}]]></textFieldExpression>
+      </textField>
+      <textField>
+        <reportElement x="3502" y="633" width="220" height="123" uuid="3c8d1bc8-cbaa-4f97-b13f-268b337dfca1"/>
+        <textElement textAlignment="Center" verticalAlignment="Middle" rotation="UpsideDown"><font fontName="SansSerif" size="20" isBold="true"/></textElement>
+        <textFieldExpression><![CDATA[$F{line1} + "\n" + $F{line2} + "\n" + $F{line3} + "\n" + $F{line4} + "\n" + $F{line5}]]></textFieldExpression>
+      </textField>
+
+      <textField>
+        <reportElement x="95" y="1283" width="220" height="123" uuid="b4822529-d37d-4e09-98a4-5cb4dd40702b"/>
+        <textElement textAlignment="Center" verticalAlignment="Middle"><font fontName="SansSerif" size="20" isBold="true"/></textElement>
+        <textFieldExpression><![CDATA[$F{line1} + "\n" + $F{line2} + "\n" + $F{line3} + "\n" + $F{line4} + "\n" + $F{line5}]]></textFieldExpression>
+      </textField>
+      <textField>
+        <reportElement x="853" y="1283" width="219" height="123" uuid="9dd10b76-7d24-4972-a3a7-dbc269782655"/>
+        <textElement textAlignment="Center" verticalAlignment="Middle"><font fontName="SansSerif" size="20" isBold="true"/></textElement>
+        <textFieldExpression><![CDATA[$F{line1} + "\n" + $F{line2} + "\n" + $F{line3} + "\n" + $F{line4} + "\n" + $F{line5}]]></textFieldExpression>
+      </textField>
+      <textField>
+        <reportElement x="1613" y="1283" width="219" height="123" uuid="a7371b21-1a2b-4c42-855a-69e9d1f8de95"/>
+        <textElement textAlignment="Center" verticalAlignment="Middle"><font fontName="SansSerif" size="20" isBold="true"/></textElement>
+        <textFieldExpression><![CDATA[$F{line1} + "\n" + $F{line2} + "\n" + $F{line3} + "\n" + $F{line4} + "\n" + $F{line5}]]></textFieldExpression>
+      </textField>
+      <textField>
+        <reportElement x="2373" y="1283" width="219" height="123" uuid="895c5f57-071f-4144-a9ae-57f0a4532afb"/>
+        <textElement textAlignment="Center" verticalAlignment="Middle"><font fontName="SansSerif" size="20" isBold="true"/></textElement>
+        <textFieldExpression><![CDATA[$F{line1} + "\n" + $F{line2} + "\n" + $F{line3} + "\n" + $F{line4} + "\n" + $F{line5}]]></textFieldExpression>
+      </textField>
+      <textField>
+        <reportElement x="3134" y="1283" width="220" height="123" uuid="55186c31-5c6f-435f-ae2f-ebec79118111"/>
+        <textElement textAlignment="Center" verticalAlignment="Middle"><font fontName="SansSerif" size="20" isBold="true"/></textElement>
+        <textFieldExpression><![CDATA[$F{line1} + "\n" + $F{line2} + "\n" + $F{line3} + "\n" + $F{line4} + "\n" + $F{line5}]]></textFieldExpression>
+      </textField>
+      <textField>
+        <reportElement x="3895" y="1283" width="219" height="123" uuid="9f766a75-5036-4ae4-9eec-64b66fc9b219"/>
+        <textElement textAlignment="Center" verticalAlignment="Middle"><font fontName="SansSerif" size="20" isBold="true"/></textElement>
+        <textFieldExpression><![CDATA[$F{line1} + "\n" + $F{line2} + "\n" + $F{line3} + "\n" + $F{line4} + "\n" + $F{line5}]]></textFieldExpression>
+      </textField>
+    </band>
+  </detail>
+</jasperReport>

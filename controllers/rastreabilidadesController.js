@@ -1,5 +1,16 @@
 import pool from '../config/database.js';
 import { computeGs1CheckDigit } from '../shared/gs1.js';
+import axios from 'axios';
+import { readFile } from 'fs/promises';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PRINT_SERVICE_URL = (process.env.PRINT_SERVICE_URL || 'http://localhost:8080').replace(/\/+$/, '');
+const RASTREABILIDADE_REPORT_PATH = path.resolve(__dirname, '../reports/rastreabilidade_etiquetas.jrxml');
+const LABEL_CNPJ = process.env.RASTREABILIDADE_LABEL_CNPJ || '22.811.775/0002-60';
+const LABEL_NIVEL = process.env.RASTREABILIDADE_LABEL_NIVEL || 'III-A';
 
 const SELECT_FIELDS = `
   r.id,
@@ -47,6 +58,37 @@ const BASE_QUERY = `
   LEFT JOIN maestro.material_variants mv  ON mv.id = c.material_variant_id
   LEFT JOIN maestro.fabric_supplier fs    ON fs.id = c.fabric_supplier_id
 `;
+
+async function findRastreabilidade(id) {
+  const result = await pool.query(
+    `SELECT ${SELECT_FIELDS} ${BASE_QUERY} WHERE r.id = $1`,
+    [id]
+  );
+  return result.rows[0] || null;
+}
+
+function formatCertificateLabel(numero) {
+  const value = String(numero || '').trim();
+  if (!value) return '';
+  return value.toUpperCase().startsWith('CC') ? value.slice(2) : value;
+}
+
+function formatLayersLabel(medidas = []) {
+  const camada = medidas.find((m) => String(m?.nome || '').toLowerCase().includes('camada'));
+  const valor = String(camada?.valor ?? '').trim();
+  if (!valor) return '';
+  return `${valor.replace('.', ',')} Layers`;
+}
+
+function buildLabelData(item) {
+  return [{
+    line1: LABEL_CNPJ,
+    line2: formatCertificateLabel(item.certificate_numero),
+    line3: LABEL_NIVEL,
+    line4: item.codigo_rastreabilidade,
+    line5: formatLayersLabel(item.certificate_medidas),
+  }];
+}
 
 async function loadProductionConfig(client = pool) {
   const result = await client.query(
@@ -205,11 +247,8 @@ export const criarRastreabilidade = async (req, res) => {
           ]
         );
 
-        const full = await pool.query(
-          `SELECT ${SELECT_FIELDS} ${BASE_QUERY} WHERE r.id = $1`,
-          [insert.rows[0].id]
-        );
-        return res.status(201).json({ success: true, data: full.rows[0] });
+        const full = await findRastreabilidade(insert.rows[0].id);
+        return res.status(201).json({ success: true, data: full });
       } catch (err) {
         lastErr = err;
         // 23505 = unique violation no (tipo_material, tr, mes, ano, sequencial).
@@ -243,17 +282,42 @@ export const criarRastreabilidade = async (req, res) => {
 export const obterRastreabilidade = async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await pool.query(
-      `SELECT ${SELECT_FIELDS} ${BASE_QUERY} WHERE r.id = $1`,
-      [id]
-    );
-    if (result.rows.length === 0) {
+    const item = await findRastreabilidade(id);
+    if (!item) {
       return res.status(404).json({ success: false, message: 'Rastreabilidade não encontrada.' });
     }
-    return res.status(200).json({ success: true, data: result.rows[0] });
+    return res.status(200).json({ success: true, data: item });
   } catch (error) {
     console.error('❌ Erro ao obter rastreabilidade:', error);
     return res.status(500).json({ success: false, message: `Erro: ${error.message}` });
+  }
+};
+
+// GET /api/rastreabilidades/:id/pdf
+export const gerarPdfRastreabilidade = async (req, res) => {
+  try {
+    const item = await findRastreabilidade(req.params.id);
+    if (!item) {
+      return res.status(404).json({ success: false, message: 'Rastreabilidade não encontrada.' });
+    }
+
+    const jrxml = await readFile(RASTREABILIDADE_REPORT_PATH, 'utf8');
+    const springRes = await axios.post(
+      `${PRINT_SERVICE_URL}/render`,
+      { jrxml, params: {}, data: buildLabelData(item) },
+      { responseType: 'arraybuffer', timeout: 30_000, headers: { 'Content-Type': 'application/json' } }
+    );
+
+    const filename = `rastreabilidade-${item.codigo_rastreabilidade}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    return res.send(Buffer.from(springRes.data));
+  } catch (error) {
+    const detail = error.response?.data
+      ? Buffer.from(error.response.data).toString('utf8').slice(0, 500)
+      : error.message;
+    console.error('❌ Erro ao gerar PDF de rastreabilidade:', detail);
+    return res.status(502).json({ success: false, message: `Falha ao gerar PDF: ${detail}` });
   }
 };
 

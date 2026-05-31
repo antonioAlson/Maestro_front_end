@@ -53,6 +53,9 @@ export const RESOURCES = {
   cron_jobs:    ['read', 'create', 'update', 'delete', 'execute', 'promote'],
   access_audit: ['read'],
 
+  // Relatórios Jasper versionados (registry no Node + render no Spring)
+  report_templates: ['read', 'create', 'update', 'delete', 'execute', 'promote'],
+
   // Dashboard / Métricas
   metrics: ['read'],
 
@@ -100,6 +103,7 @@ export const RESOURCE_LABELS = {
   audit_logs:          'Logs de Auditoria',
   cron_runs:           'Histórico de Cron',
   cron_jobs:           'Cron Jobs',
+  report_templates:    'Relatórios Jasper',
   access_audit:        'Auditoria de Acessos',
   metrics:             'Dashboard / Métricas',
   users:               'Usuários',
@@ -136,7 +140,7 @@ export const MODULES = [
   { id: 'cadastros',   label: 'Cadastros',     resources: ['plate_suppliers', 'panel_receipts', 'panel_reservations', 'panel_consumptions', 'fabric_suppliers', 'materials', 'conformity_certificates'] },
   { id: 'auditoria',   label: 'Auditoria',     resources: ['audit_logs', 'cron_runs', 'cron_jobs', 'access_audit'] },
   { id: 'dashboard',   label: 'Dashboard',     resources: ['metrics'] },
-  { id: 'admin',       label: 'Administração', resources: ['users', 'roles', 'user_access', 'app_preferences'] },
+  { id: 'admin',       label: 'Administração', resources: ['users', 'roles', 'user_access', 'app_preferences', 'report_templates'] },
 ];
 
 // Frontend route → minimum permission to enter that page.
@@ -160,8 +164,7 @@ export const ROUTE_PERMISSIONS = {
   '/invoicing':                    { resource: 'invoices',            action: 'read'   },
   '/invoicing/aging':              { resource: 'invoices',            action: 'read'   },
   '/invoicing/integrity':          { resource: 'invoices',            action: 'read'   },
-  '/CreateReceipt':                { resource: 'receipts',            action: 'create' },
-  '/ListReceipt':                  { resource: 'receipts',            action: 'read'   },
+  '/recebimento-materias':         { resource: 'receipts',            action: 'read'   },
   '/CreateCicleAutoClave':         { resource: 'autoclave',           action: 'read'   },
   '/corte':                        { resource: 'cutting_records',     action: 'read'   },
   '/cadastros/fornecedores-placa':         { resource: 'plate_suppliers',         action: 'read' },
@@ -179,6 +182,7 @@ export const ROUTE_PERMISSIONS = {
   '/users':                        { resource: 'users',               action: 'read'   },
   '/users/acesso':                 { resource: 'user_access',         action: 'manage' },
   '/admin/preferencias':           { resource: 'app_preferences',     action: 'update' },
+  '/admin/relatorios':             { resource: 'report_templates',    action: 'read'   },
   '/settings':                     null,
 };
 
@@ -282,6 +286,12 @@ export const PERMISSION_DESCRIPTIONS = {
   'cron_jobs:delete':  'Excluir tarefas agendadas',
   'cron_jobs:execute': 'Executar tarefas agendadas manualmente (botão ▶)',
   'cron_jobs:promote': 'Promover versão DVP/SAT/REL para OPE (produção)',
+  'report_templates:read':    'Visualizar relatórios Jasper e suas versões',
+  'report_templates:create':  'Criar relatórios e enviar novos .jrxml',
+  'report_templates:update':  'Editar versões (código JS, status, .jrxml)',
+  'report_templates:delete':  'Excluir relatórios e versões',
+  'report_templates:execute': 'Renderizar/testar relatórios (gera PDF)',
+  'report_templates:promote': 'Promover versão DVP/SAT/REL para OPE (produção)',
   'access_audit:read': 'Visualizar auditoria de acessos e permissões',
   'metrics:read':      'Visualizar dashboard e métricas gerais',
   'users:read':    'Visualizar usuários do sistema',

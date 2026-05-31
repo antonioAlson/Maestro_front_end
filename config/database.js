@@ -190,6 +190,7 @@ export async function ensureDatabaseCompatibility() {
   await ensureOsPlanningPackId();
   await ensureCronRunsTable();
   await ensureCronJobsTables();
+  await ensureReportTemplatesTables();
   await ensureUserSecurityColumns();
   await ensureCargosTable();
   await ensureUserProfileColumns();
@@ -614,6 +615,52 @@ async function ensureCronJobsTables() {
       code = EXCLUDED.code,
       notes = EXCLUDED.notes
   `, 'cron invoice-integrity seed');
+}
+
+async function ensureReportTemplatesTables() {
+  // Registry de relatórios Jasper versionados. Espelha o modelo de cron_jobs:
+  // o Node é a fonte da verdade (guarda o .jrxml + variáveis parseadas + JS) e
+  // decide qual versão está "no ar" (OPE); o Spring renderiza de forma genérica.
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS maestro.report_templates (
+      id          SERIAL PRIMARY KEY,
+      key         TEXT NOT NULL UNIQUE,
+      name        TEXT NOT NULL,
+      description TEXT,
+      created_by  INTEGER REFERENCES maestro.users(id),
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at  TIMESTAMPTZ
+    )
+  `, 'maestro.report_templates');
+
+  await runCompatibilityQuery(`
+    CREATE TABLE IF NOT EXISTS maestro.report_template_versions (
+      id                  BIGSERIAL PRIMARY KEY,
+      template_id         INTEGER NOT NULL REFERENCES maestro.report_templates(id) ON DELETE CASCADE,
+      version_number      NUMERIC(6,2) NOT NULL,
+      status              TEXT NOT NULL CHECK (status IN ('DVP','SAT','REL','OPE')),
+      jrxml               TEXT NOT NULL,
+      variables           JSONB,
+      code                TEXT,
+      notes               TEXT,
+      created_by          INTEGER REFERENCES maestro.users(id),
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+      status_changed_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      status_changed_by   INTEGER REFERENCES maestro.users(id),
+      CONSTRAINT report_template_versions_tpl_ver_unique UNIQUE (template_id, version_number)
+    )
+  `, 'maestro.report_template_versions');
+
+  // Apenas uma versão por relatório pode estar em OPE (a que responde no /render/:key).
+  await runCompatibilityQuery(`
+    CREATE UNIQUE INDEX IF NOT EXISTS report_template_versions_ope_unique
+      ON maestro.report_template_versions (template_id) WHERE status = 'OPE'
+  `, 'report_template_versions_ope_unique');
+
+  await runCompatibilityQuery(`
+    CREATE INDEX IF NOT EXISTS report_template_versions_tpl_idx
+      ON maestro.report_template_versions (template_id, version_number DESC)
+  `, 'report_template_versions_tpl_idx');
 }
 
 async function ensureCronRunsTable() {

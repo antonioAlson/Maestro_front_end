@@ -4,6 +4,7 @@ import {
   proximoSequencial,
   criarRastreabilidade,
   obterRastreabilidade,
+  gerarPdfRastreabilidade,
   excluirRastreabilidade,
 } from '../controllers/rastreabilidadesController.js';
 import { authenticate } from '../middleware/auth.js';
@@ -14,6 +15,7 @@ const router = express.Router();
 router.get('/',                authenticate, requirePermission('rastreabilidades', 'read'),   listarRastreabilidades);
 router.get('/next-sequencial', authenticate, requirePermission('rastreabilidades', 'read'),   proximoSequencial);
 router.post('/',               authenticate, requirePermission('rastreabilidades', 'create'), criarRastreabilidade);
+router.get('/:id/pdf',         authenticate, requirePermission('rastreabilidades', 'read'),   gerarPdfRastreabilidade);
 router.get('/:id',             authenticate, requirePermission('rastreabilidades', 'read'),   obterRastreabilidade);
 router.delete('/:id',          authenticate, requirePermission('rastreabilidades', 'delete'), excluirRastreabilidade);
 
