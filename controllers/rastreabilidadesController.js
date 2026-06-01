@@ -1,7 +1,8 @@
 import pool from '../config/database.js';
 import { computeGs1CheckDigit } from '../shared/gs1.js';
 import axios from 'axios';
-import { readFile } from 'fs/promises';
+import { readFile, mkdir, writeFile, rename, access } from 'fs/promises';
+import { constants as fsConstants } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -11,6 +12,43 @@ const PRINT_SERVICE_URL = (process.env.PRINT_SERVICE_URL || 'http://localhost:80
 const RASTREABILIDADE_REPORT_PATH = path.resolve(__dirname, '../reports/rastreabilidade_etiquetas.jrxml');
 const LABEL_CNPJ = process.env.RASTREABILIDADE_LABEL_CNPJ || '22.811.775/0002-60';
 const LABEL_NIVEL = process.env.RASTREABILIDADE_LABEL_NIVEL || 'IIIA';
+// PDFs de rastreabilidade gerados na criação ficam aqui (mesma base /opt/applicationStorage/orquestra
+// dos demais arquivos persistidos). Default relativo p/ dev quando a env não está setada.
+const RASTREABILIDADE_PDF_DIR =
+  process.env.RASTREABILIDADE_PDF_DIR || path.resolve(__dirname, '../storage/rastreabilidades');
+
+// Nome de arquivo determinístico a partir do código da rastreabilidade (sem coluna no banco).
+function pdfFilenameFor(item) {
+  const codigo = String(item.codigo_rastreabilidade || item.id || '').replace(/[^\w.-]/g, '_');
+  return `rastreabilidade-${codigo}.pdf`;
+}
+
+function pdfPathFor(item) {
+  return path.join(RASTREABILIDADE_PDF_DIR, pdfFilenameFor(item));
+}
+
+// Renderiza o PDF no Spring. Usado APENAS na criação (e no fallback p/ registros antigos);
+// o download normal serve o arquivo já gravado, sem recompilar o relatório.
+async function renderRastreabilidadePdf(item) {
+  const jrxml = await readFile(RASTREABILIDADE_REPORT_PATH, 'utf8');
+  const springRes = await axios.post(
+    `${PRINT_SERVICE_URL}/render`,
+    { jrxml, params: {}, data: buildLabelData(item) },
+    { responseType: 'arraybuffer', timeout: 30_000, headers: { 'Content-Type': 'application/json' } }
+  );
+  return Buffer.from(springRes.data);
+}
+
+// Escrita atômica (.tmp → rename): o registro nunca aponta para um PDF truncado.
+async function generateAndSavePdf(item) {
+  const buffer = await renderRastreabilidadePdf(item);
+  await mkdir(RASTREABILIDADE_PDF_DIR, { recursive: true });
+  const finalPath = pdfPathFor(item);
+  const tmpPath = `${finalPath}.tmp`;
+  await writeFile(tmpPath, buffer);
+  await rename(tmpPath, finalPath);
+  return finalPath;
+}
 
 const SELECT_FIELDS = `
   r.id,
@@ -256,6 +294,19 @@ export const criarRastreabilidade = async (req, res) => {
         );
 
         const full = await findRastreabilidade(insert.rows[0].id);
+
+        // Gera e grava o PDF junto da criação para ficar disponível p/ download no registro.
+        // Best-effort: o registro já existe; se o Spring falhar, não derruba a criação
+        // (o download faz fallback de geração sob demanda).
+        try {
+          await generateAndSavePdf(full);
+        } catch (pdfErr) {
+          const detail = pdfErr.response?.data
+            ? Buffer.from(pdfErr.response.data).toString('utf8').slice(0, 300)
+            : pdfErr.message;
+          console.error(`⚠️ Rastreabilidade ${full.id} criada, mas falha ao gerar/salvar PDF:`, detail);
+        }
+
         return res.status(201).json({ success: true, data: full });
       } catch (err) {
         lastErr = err;
@@ -302,6 +353,8 @@ export const obterRastreabilidade = async (req, res) => {
 };
 
 // GET /api/rastreabilidades/:id/pdf
+// Serve o PDF gravado na criação — não recompila o relatório. Fallback: registros
+// criados antes desta mudança (ou cuja geração falhou) são gerados uma única vez e salvos.
 export const gerarPdfRastreabilidade = async (req, res) => {
   try {
     const item = await findRastreabilidade(req.params.id);
@@ -309,17 +362,27 @@ export const gerarPdfRastreabilidade = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Rastreabilidade não encontrada.' });
     }
 
-    const jrxml = await readFile(RASTREABILIDADE_REPORT_PATH, 'utf8');
-    const springRes = await axios.post(
-      `${PRINT_SERVICE_URL}/render`,
-      { jrxml, params: {}, data: buildLabelData(item) },
-      { responseType: 'arraybuffer', timeout: 30_000, headers: { 'Content-Type': 'application/json' } }
-    );
+    const finalPath = pdfPathFor(item);
+    const filename = pdfFilenameFor(item);
 
-    const filename = `rastreabilidade-${item.codigo_rastreabilidade}.pdf`;
+    let exists = true;
+    try {
+      await access(finalPath, fsConstants.R_OK);
+    } catch {
+      exists = false;
+    }
+    if (!exists) {
+      await generateAndSavePdf(item);
+    }
+
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    return res.send(Buffer.from(springRes.data));
+    return res.sendFile(finalPath, (err) => {
+      if (err && !res.headersSent) {
+        console.error('❌ Erro ao enviar PDF de rastreabilidade:', err.message);
+        res.status(500).json({ success: false, message: `Falha ao enviar PDF: ${err.message}` });
+      }
+    });
   } catch (error) {
     const detail = error.response?.data
       ? Buffer.from(error.response.data).toString('utf8').slice(0, 500)
