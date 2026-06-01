@@ -21,6 +21,52 @@ import { parseJrxml } from '../services/jrxmlParser.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPORTS_DIR = path.resolve(__dirname, '../../printServiceCarbon/src/main/resources/Reports');
+// Relatórios que vivem dentro do próprio Orquestra_API (não no printServiceCarbon).
+const LOCAL_REPORTS_DIR = path.resolve(__dirname, '../reports');
+
+// code da etiqueta de rastreabilidade: recebe input.id, reconstrói as linhas
+// (line1..line5) a partir do banco — equivalente ao buildLabelData do
+// rastreabilidadesController, para render genérico via /render/:key.
+const RASTREABILIDADE_CODE = `
+const id = input.id ?? input.rastreabilidade_id;
+if (!id) throw new Error('input.id é obrigatório');
+const CNPJ = process.env.RASTREABILIDADE_LABEL_CNPJ || '22.811.775/0002-60';
+const NIVEL = process.env.RASTREABILIDADE_LABEL_NIVEL || 'IIIA';
+const { rows } = await ctx.db.query(\`
+  SELECT c.numero AS certificate_numero,
+         r.codigo_iis, r.iis_dv, r.codigo_rastreabilidade,
+         COALESCE((
+           SELECT json_agg(json_build_object('nome', mt.nome, 'valor', c.medidas->>(mt.id::text)) ORDER BY mt.nome)
+             FROM maestro.material_measure_type_map mm
+             JOIN maestro.material_measure_types mt ON mt.id = mm.measure_type_id
+            WHERE mm.material_id = c.material_id AND mt.ativo = true
+         ), '[]'::json) AS medidas
+    FROM maestro.rastreabilidades r
+    JOIN maestro.conformity_certificates c ON c.id = r.certificate_id
+   WHERE r.id = $1\`, [id]);
+if (!rows.length) throw new Error('Rastreabilidade não encontrada: ' + id);
+const it = rows[0];
+const certNum = String(it.certificate_numero || '').trim();
+const certLabel = certNum ? (certNum.toUpperCase().startsWith('CC') ? certNum.toUpperCase() : 'CC' + certNum) : '';
+const codigo = String(it.codigo_iis || '').trim();
+const dv = String(it.iis_dv || '').trim();
+let iisLabel = '';
+if (codigo) iisLabel = (dv && codigo.endsWith(dv)) ? (codigo.slice(0, -1) + ' ' + dv) : codigo;
+const medidas = Array.isArray(it.medidas) ? it.medidas : [];
+const camada = medidas.find((m) => String((m && m.nome) || '').toLowerCase().includes('camada'));
+const valor = String(camada && camada.valor != null ? camada.valor : '').trim();
+const layers = valor ? (valor.replace('.', ',') + ' Layers') : '';
+return {
+  params: {},
+  data: [{
+    line1: CNPJ,
+    line2: certLabel,
+    line3: NIVEL,
+    line4: iisLabel,
+    line5: (it.codigo_rastreabilidade || '') + '\\n' + layers,
+  }],
+};
+`.trim();
 
 // key → uso lógico; code → param-builder equivalente ao endpoint Spring legado.
 const REPORTS = [
@@ -52,12 +98,20 @@ const REPORTS = [
     description: 'Relatório de enfesto (sem parâmetros). Legado: GET /reportEnfesto.',
     code: 'return { params: {} };',
   },
+  {
+    key: 'rastreabilidade-label',
+    name: 'Etiqueta de Rastreabilidade',
+    dir: LOCAL_REPORTS_DIR,
+    file: 'rastreabilidade_etiquetas.jrxml',
+    description: 'Folha de etiquetas de rastreabilidade opaca. Legado: GET /api/rastreabilidades/:id/pdf.',
+    code: RASTREABILIDADE_CODE,
+  },
 ];
 
 async function seedOne(r) {
   let xml;
   try {
-    xml = readFileSync(path.join(REPORTS_DIR, r.file), 'utf8');
+    xml = readFileSync(path.join(r.dir || REPORTS_DIR, r.file), 'utf8');
   } catch (e) {
     console.warn(`! ${r.key}: arquivo não encontrado (${r.file}) — pulando. ${e.code || e.message}`);
     return;
