@@ -9,7 +9,10 @@ import { scrapeCarbonExcel } from './carbonScraperService.js';
 //   1. scraping do Carbon (Playwright) -> xlsx bruto
 //   2. lê a aba "data", coleta as OS
 //   3. de-para com o Jira por cf[10256] (OS/PD)
-//   4. sobrescreve ETAPA / previsões nas linhas correspondentes
+//   4. NÃO altera as colunas originais do Carbon. Em vez disso, acrescenta
+//      colunas "(Jira)" com a informação correta e uma coluna final de
+//      "OBSERVAÇÕES (DIVERGÊNCIAS)". Quando o Jira diverge do Carbon, a
+//      célula da OS é destacada (âmbar) e a divergência é descrita na obs.
 //   5. escrita atômica do latest.xlsx (+ status.json)
 //
 // Credenciais do Jira vêm do ambiente (JIRA_URL/JIRA_EMAIL/JIRA_API_TOKEN),
@@ -35,6 +38,26 @@ const EXCEL = {
     PREV_SUP_VIDRO: 21,
   },
 };
+
+// Cor de destaque (âmbar) aplicada à célula da OS quando há divergência.
+const OS_DIVERGENCE_FILL = {
+  type: 'pattern',
+  pattern: 'solid',
+  fgColor: { argb: 'FFFFC000' },
+};
+
+// Campos comparados Carbon (coluna original) x Jira. Para cada um é criada
+// uma coluna "<label> (Jira)" ao final da planilha, sem tocar na original.
+//   type 'text' -> comparação normalizada (case-insensitive, sem acento de cor)
+//   type 'date' -> comparação por data (AAAA-MM-DD)
+const COMPARE_FIELDS = [
+  { label: 'ETAPA', origCol: EXCEL.col.ETAPA, jira: 'etapa', type: 'text' },
+  { label: 'PREVISÃO RECEB. VIDRO', origCol: EXCEL.col.PREV_VIDRO, jira: 'prevVidro', type: 'date' },
+  { label: 'PREVISÃO RECEB. AÇO', origCol: EXCEL.col.PREV_ACO, jira: 'prevAco', type: 'date' },
+  { label: 'PREVISÃO RECEB. OPACO', origCol: EXCEL.col.PREV_OPACO, jira: 'prevOpaco', type: 'date' },
+  { label: 'PREVISÃO RECEB TENSYLON', origCol: EXCEL.col.PREV_TENSYLON, jira: 'prevTensylon', type: 'date' },
+  { label: 'PREVISÃO RECEB SUP. VIDRO', origCol: EXCEL.col.PREV_SUP_VIDRO, jira: 'prevSupVidro', type: 'date' },
+];
 
 // Custom fields do Jira (confirmados no dump jira_kanban_custom_fields.txt)
 const JIRA_FIELDS = {
@@ -97,6 +120,36 @@ function normSituacao(v) {
 function dateOnly(v) {
   if (!v) return null;
   return String(v).slice(0, 10);
+}
+
+// Normaliza qualquer valor de célula/Jira para data AAAA-MM-DD (ou '' se vazio).
+// Trata Date (exceljs lê datas como Date), célula de fórmula e string ISO.
+function toDateOnly(v) {
+  if (v == null || v === '') return '';
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  if (typeof v === 'object') {
+    if (v.result != null) return toDateOnly(v.result);
+    if (v.text != null) return String(v.text).slice(0, 10);
+    return '';
+  }
+  return String(v).slice(0, 10);
+}
+
+// Texto legível de uma célula (para exibir na coluna de observações).
+function cellText(v) {
+  if (v == null) return '';
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  if (typeof v === 'object') return String(v.text ?? v.result ?? v.value ?? v.name ?? '');
+  return String(v);
+}
+
+// Normalização para comparação de texto: remove emojis/bolinhas de cor do
+// início, espaços nas pontas e diferenças de caixa.
+function normText(v) {
+  return cellText(v)
+    .replace(/^[^\p{L}\p{N}]+/u, '')
+    .trim()
+    .toLowerCase();
 }
 
 async function fetchJiraByOs(osList) {
@@ -166,16 +219,42 @@ function getOsList(ws) {
   return list;
 }
 
-function setIfPresent(row, colIdx, value) {
-  if (value == null || value === '') return;
-  row.getCell(col1(colIdx)).value = value;
+// Acrescenta o cabeçalho das novas colunas (sem mexer nas originais) e
+// devolve os índices 1-based de cada coluna "(Jira)" + da coluna de obs.
+function addJiraColumns(ws) {
+  const headerRow = ws.getRow(EXCEL.headerRow);
+  const baseStyle = headerRow.getCell(col1(EXCEL.col.OS)).style;
+  let next = headerRow.cellCount + 1; // primeira coluna livre após as originais
+
+  const jiraCol = {};
+  for (const f of COMPARE_FIELDS) {
+    const cell = headerRow.getCell(next);
+    cell.value = `${f.label} (Jira)`;
+    cell.style = { ...baseStyle };
+    ws.getColumn(next).width = 24;
+    jiraCol[f.jira] = next;
+    next++;
+  }
+
+  const obsCol = next;
+  const obsCell = headerRow.getCell(obsCol);
+  obsCell.value = 'OBSERVAÇÕES (DIVERGÊNCIAS)';
+  obsCell.style = { ...baseStyle };
+  ws.getColumn(obsCol).width = 60;
+  headerRow.commit?.();
+
+  return { jiraCol, obsCol };
 }
 
-function applyJira(ws, jiraMap) {
-  const c = EXCEL.col;
-  const osCol = col1(c.OS);
+// Compara Carbon x Jira sem alterar as colunas originais:
+//   - escreve o valor correto (Jira) nas colunas "(Jira)"
+//   - em divergência, destaca a célula da OS e descreve na coluna de obs
+export function applyJira(ws, jiraMap) {
+  const osCol = col1(EXCEL.col.OS);
+  const { jiraCol, obsCol } = addJiraColumns(ws);
   let matched = 0;
   let missing = 0;
+  let diverged = 0;
 
   ws.eachRow({ includeEmpty: false }, (row, rowNumber) => {
     if (rowNumber <= EXCEL.headerRow) return;
@@ -188,15 +267,40 @@ function applyJira(ws, jiraMap) {
       return;
     }
     matched++;
-    setIfPresent(row, c.ETAPA, j.etapa);
-    setIfPresent(row, c.PREV_VIDRO, j.prevVidro);
-    setIfPresent(row, c.PREV_ACO, j.prevAco);
-    setIfPresent(row, c.PREV_OPACO, j.prevOpaco);
-    setIfPresent(row, c.PREV_TENSYLON, j.prevTensylon);
-    setIfPresent(row, c.PREV_SUP_VIDRO, j.prevSupVidro);
+
+    const divergences = [];
+    for (const f of COMPARE_FIELDS) {
+      const jiraVal = j[f.jira];
+      // Coluna "(Jira)" sempre recebe a informação correta (quando houver).
+      row.getCell(jiraCol[f.jira]).value = jiraVal == null || jiraVal === '' ? null : jiraVal;
+
+      const origRaw = row.getCell(col1(f.origCol)).value;
+      if (f.type === 'date') {
+        const jiraDate = toDateOnly(jiraVal);
+        if (!jiraDate) continue; // Jira sem data: nada a afirmar
+        const origDate = toDateOnly(origRaw);
+        if (origDate !== jiraDate) {
+          divergences.push(`${f.label}: Carbon=${origDate || '—'} / Jira=${jiraDate}`);
+        }
+      } else {
+        const jiraNorm = normText(jiraVal);
+        if (!jiraNorm) continue;
+        if (normText(origRaw) !== jiraNorm) {
+          divergences.push(
+            `${f.label}: Carbon='${cellText(origRaw) || '—'}' / Jira='${cellText(jiraVal)}'`
+          );
+        }
+      }
+    }
+
+    if (divergences.length) {
+      diverged++;
+      row.getCell(osCol).fill = OS_DIVERGENCE_FILL;
+      row.getCell(obsCol).value = divergences.join(' | ');
+    }
   });
 
-  return { matched, missing };
+  return { matched, missing, diverged };
 }
 
 // ===== Status ========================================================
@@ -231,6 +335,7 @@ export async function run({ scrape = scrapeCarbonExcel } = {}) {
   }
   running = true;
   const startedAt = Date.now();
+  const tmpFile = `${LATEST_FILE}.tmp`;
   console.log('[CarbonReport] iniciando ciclo');
 
   try {
@@ -244,10 +349,11 @@ export async function run({ scrape = scrapeCarbonExcel } = {}) {
     const jiraMap = await fetchJiraByOs(osList);
     const merge = applyJira(ws, jiraMap);
 
-    // Escrita atômica: grava em .tmp e renomeia por cima.
-    const tmp = `${LATEST_FILE}.tmp`;
-    await wb.xlsx.writeFile(tmp);
-    fs.renameSync(tmp, LATEST_FILE);
+    // Publicação atômica: grava o NOVO relatório em .tmp e só então renomeia
+    // por cima do latest.xlsx. O relatório anterior continua sendo servido
+    // para download até o novo estar 100% gravado — nunca há janela sem arquivo.
+    await wb.xlsx.writeFile(tmpFile);
+    fs.renameSync(tmpFile, LATEST_FILE);
 
     fs.rm(rawPath, { force: true }, () => {});
 
@@ -259,7 +365,9 @@ export async function run({ scrape = scrapeCarbonExcel } = {}) {
   } catch (err) {
     const durationMs = Date.now() - startedAt;
     console.error('[CarbonReport] ciclo falhou:', err.message);
-    // Mantém o último latest.xlsx bom; registra a falha no status.
+    // Mantém o último latest.xlsx bom; remove só o .tmp parcial (se houver)
+    // e registra a falha no status. O relatório anterior segue intacto.
+    fs.rm(tmpFile, { force: true }, () => {});
     writeStatus({ ok: false, message: err.message, durationMs });
     return { ok: false, error: err.message };
   } finally {
